@@ -1,27 +1,54 @@
-# Logs
-logs
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+build/
+
+# logs
 *.log
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
+# environment variables
 .env
 .env.local
+.env.development.local
+.env.production.local
+
+# editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# cache
+.cache/
+.temp/
+
+# vite
+vite.config.ts.timestamp-*
+
+# typescript
+*.tsbuildinfo
+
+# Claude / Cursor temporary files
+.claude/tmp/
+.cursor/
+.claude/settings.local.json
+
+# local screenshots or debug images
+debug/
+screenshots/
+
+# generated audio/video
+generated/
+
+# coverage
+coverage/
+
+# images
+ExampleImage/
