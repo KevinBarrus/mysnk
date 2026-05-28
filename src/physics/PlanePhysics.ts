@@ -3,14 +3,9 @@ import {
   BALL_MASS,
   BALL_RADIUS,
   CUSHION_HEIGHT,
-  CUSHION_WIDTH,
-  HALF_LENGTH,
-  HALF_WIDTH,
-  POCKET_RADIUS,
-  TABLE_LENGTH,
-  TABLE_WIDTH,
 } from '@/constants/table'
 import { isBallInPocket } from '@/physics/pockets'
+import { PCOL_TABLE_OUTER_CUSHION_WIDTH, pcolTableCollisionModel, pcolTableCueModel } from '@/table/pcolTable'
 import type { BallColor } from '@/constants/table'
 import type { Position2D } from '@/types/coords'
 
@@ -34,6 +29,14 @@ export interface ShotBlockResult {
   blockingBallId?: string
 }
 
+export interface CueAddress {
+  blocked: boolean
+  reason: ShotBlockReason | null
+  defaultTipOffsetY: number
+  requiredElevation: number
+  constrainedBy: 'none' | 'rail' | 'snookered' | 'railAndSnookered'
+}
+
 /** Game (x,y) mm → cannon world (x, z) with Y-up. */
 export function tableToWorld(pos: Position2D): CANNON.Vec3 {
   return new CANNON.Vec3(pos.x, 0, pos.y)
@@ -54,7 +57,7 @@ export class PlanePhysics {
   constructor() {
     this.world.broadphase = new CANNON.SAPBroadphase(this.world)
     this.world.allowSleep = true
-    this.world.solver.iterations = 25
+    ;(this.world.solver as CANNON.GSSolver).iterations = 25
     this.world.defaultContactMaterial.friction = 0.35
     this.world.defaultContactMaterial.restitution = 0.75
 
@@ -63,31 +66,29 @@ export class PlanePhysics {
 
   private buildCushions(): void {
     const wallH = CUSHION_HEIGHT
-    const t = CUSHION_WIDTH
-    const outerW = TABLE_WIDTH + t * 2
+    const t = PCOL_TABLE_OUTER_CUSHION_WIDTH
 
-    // Gap on each long side for the middle pocket
-    const halfGap = POCKET_RADIUS * 1.1
-    const longSegLen = HALF_LENGTH - halfGap
-    const longSegZ = longSegLen / 2  // half-size for Box shape
+    for (const rail of pcolTableCollisionModel.railSegments) {
+      const start = rail.segment.start
+      const end = rail.segment.end
+      const dx = end.x - start.x
+      const dy = end.y - start.y
+      const len = Math.hypot(dx, dy)
+      const center = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
+      const alongX = dx / (len || 1)
+      const alongY = dy / (len || 1)
+      const normal = rail.normal
+      const bodyCenter = {
+        x: center.x + normal.x * (t / 2),
+        y: center.y + normal.y * (t / 2),
+      }
 
-    const walls: Array<{ pos: CANNON.Vec3; size: CANNON.Vec3 }> = [
-      // Short sides (full width)
-      { pos: new CANNON.Vec3(0, wallH / 2, -HALF_LENGTH - t / 2), size: new CANNON.Vec3(outerW, wallH, t) },
-      { pos: new CANNON.Vec3(0, wallH / 2, HALF_LENGTH + t / 2), size: new CANNON.Vec3(outerW, wallH, t) },
-      // Left long side: two segments with gap for middle pocket
-      { pos: new CANNON.Vec3(-HALF_WIDTH - t / 2, wallH / 2, -(HALF_LENGTH + halfGap) / 2), size: new CANNON.Vec3(t, wallH, longSegLen) },
-      { pos: new CANNON.Vec3(-HALF_WIDTH - t / 2, wallH / 2, (HALF_LENGTH + halfGap) / 2), size: new CANNON.Vec3(t, wallH, longSegLen) },
-      // Right long side: two segments with gap for middle pocket
-      { pos: new CANNON.Vec3(HALF_WIDTH + t / 2, wallH / 2, -(HALF_LENGTH + halfGap) / 2), size: new CANNON.Vec3(t, wallH, longSegLen) },
-      { pos: new CANNON.Vec3(HALF_WIDTH + t / 2, wallH / 2, (HALF_LENGTH + halfGap) / 2), size: new CANNON.Vec3(t, wallH, longSegLen) },
-    ]
-
-    for (const w of walls) {
-      const shape = new CANNON.Box(new CANNON.Vec3(w.size.x / 2, w.size.y / 2, w.size.z / 2))
+      const shape = new CANNON.Box(new CANNON.Vec3(len / 2, wallH / 2, t / 2))
       const body = new CANNON.Body({ mass: 0, material: new CANNON.Material({ friction: 0.25, restitution: 0.8 }) })
       body.addShape(shape)
-      body.position.copy(w.pos)
+      body.position.copy(tableToWorld(bodyCenter))
+      const yaw = Math.atan2(alongY, alongX)
+      body.quaternion.setFromEuler(0, -yaw, 0, 'XYZ')
       this.world.addBody(body)
     }
   }
@@ -138,46 +139,50 @@ export class PlanePhysics {
     this.balls.delete(id)
   }
 
-  evaluateCueStrike(id: string, direction: Position2D, power: number): ShotBlockResult {
+  evaluateCueAddress(id: string, direction: Position2D): CueAddress {
     const ball = this.balls.get(id)
     if (!ball) {
-      return { blocked: true, reason: 'cueBallMissing' }
+      return this.blockedCueAddress('cueBallMissing')
     }
     if (ball.potted) {
-      return { blocked: true, reason: 'cueBallPotted' }
+      return this.blockedCueAddress('cueBallPotted')
     }
 
     const cuePos = worldToTable(ball.body.position)
     const len = Math.hypot(direction.x, direction.y)
     if (len < 1e-6) {
-      return { blocked: true, reason: 'cueBackswingBlockedByRail' }
+      return this.blockedCueAddress('cueBackswingBlockedByRail')
     }
 
     const dir = { x: direction.x / len, y: direction.y / len }
-    const railClearance = this.getRailClearance(cuePos)
-    const railFrozenMargin = BALL_RADIUS * 0.18
-    const railBackswingMargin = BALL_RADIUS + 8
-    if (railClearance <= railFrozenMargin) {
-      return { blocked: true, reason: 'cueBallFrozenToRail' }
+    if (this.isCueBallOverlappingRail(cuePos)) {
+      return this.blockedCueAddress('cueBallFrozenToRail')
     }
 
-    const pullBack = 120 + power * 280
-    const cueLength = 710 + pullBack
-    const shaftRadius = BALL_RADIUS * 0.45
-    const requiredBackswing = cueLength + shaftRadius
     const backwards = { x: -dir.x, y: -dir.y }
-
-    const railTravel = this.distanceToRail(cuePos, backwards)
-    if (railTravel < requiredBackswing + railBackswingMargin) {
-      return { blocked: true, reason: 'cueBackswingBlockedByRail' }
+    const overlapBallId = this.findOverlappingBall(id, cuePos)
+    if (overlapBallId) {
+      return this.blockedCueAddress('cueBackswingBlockedByBall')
     }
 
-    const channel = this.findBallBlockingCueChannel(id, cuePos, backwards, requiredBackswing, shaftRadius)
-    if (channel) {
-      return { blocked: true, reason: 'cueBackswingBlockedByBall', blockingBallId: channel }
-    }
+    const railConstraint = this.measureRailConstraint(cuePos, backwards)
+    const snookerConstraint = this.measureSnookerConstraint(id, cuePos, backwards)
 
-    return { blocked: false, reason: null }
+    const defaultTipOffsetY = Math.max(railConstraint.tipOffsetY, snookerConstraint.tipOffsetY)
+    const requiredElevation = Math.max(railConstraint.elevation, snookerConstraint.elevation)
+
+    let constrainedBy: CueAddress['constrainedBy'] = 'none'
+    if (railConstraint.active && snookerConstraint.active) constrainedBy = 'railAndSnookered'
+    else if (railConstraint.active) constrainedBy = 'rail'
+    else if (snookerConstraint.active) constrainedBy = 'snookered'
+
+    return {
+      blocked: false,
+      reason: null,
+      defaultTipOffsetY,
+      requiredElevation,
+      constrainedBy,
+    }
   }
 
   /** Impulse in table plane (mm/s scale tuned for demo). */
@@ -206,56 +211,110 @@ export class PlanePhysics {
   }
 
   private getRailClearance(pos: Position2D): number {
-    return Math.min(
-      HALF_WIDTH - Math.abs(pos.x) - BALL_RADIUS,
-      HALF_LENGTH - Math.abs(pos.y) - BALL_RADIUS,
+    let minClearance = Number.POSITIVE_INFINITY
+
+    for (const rail of pcolTableCueModel.railSegments) {
+      const { segment, normal } = rail
+      const clearance = (pos.x - segment.start.x) * normal.x + (pos.y - segment.start.y) * normal.y - BALL_RADIUS
+      minClearance = Math.min(minClearance, clearance)
+    }
+
+    return minClearance
+  }
+
+  private blockedCueAddress(reason: ShotBlockReason): CueAddress {
+    return {
+      blocked: true,
+      reason,
+      defaultTipOffsetY: 0,
+      requiredElevation: 0,
+      constrainedBy: 'none',
+    }
+  }
+
+  private isCueBallOverlappingRail(pos: Position2D): boolean {
+    return this.getRailClearance(pos) < -1
+  }
+
+  private findOverlappingBall(cueBallId: string, cuePos: Position2D): string | null {
+    for (const ball of this.getActiveBalls()) {
+      if (ball.id === cueBallId) continue
+      const pos = worldToTable(ball.body.position)
+      const dist = Math.hypot(pos.x - cuePos.x, pos.y - cuePos.y)
+      if (dist < BALL_RADIUS * 2 - 1) {
+        return ball.id
+      }
+    }
+    return null
+  }
+
+  private measureRailConstraint(pos: Position2D, backwards: Position2D): {
+    active: boolean
+    tipOffsetY: number
+    elevation: number
+  } {
+    const clearance = Math.max(0, this.getRailClearance(pos))
+    const closeThreshold = pcolTableCueModel.constraints.railElevationCurve.startClearance
+    if (clearance >= closeThreshold) {
+      return { active: false, tipOffsetY: 0, elevation: 0 }
+    }
+
+    const severity = 1 - clearance / closeThreshold
+    const directionBias = Math.max(Math.abs(backwards.x), Math.abs(backwards.y))
+    const tipOffsetY = pcolTableCueModel.constraints.defaultTipClearance
+      + severity * 0.5 * (0.75 + directionBias * 0.25)
+    const elevation = Math.min(
+      pcolTableCueModel.constraints.maxElevation,
+      pcolTableCueModel.constraints.defaultElevation + severity * 0.35,
     )
+
+    return {
+      active: severity > 0.02,
+      tipOffsetY,
+      elevation,
+    }
   }
 
-  private distanceToRail(pos: Position2D, direction: Position2D): number {
-    const distances: number[] = []
-    if (Math.abs(direction.x) > 1e-6) {
-      const boundX = direction.x > 0 ? HALF_WIDTH - BALL_RADIUS : -HALF_WIDTH + BALL_RADIUS
-      const tx = (boundX - pos.x) / direction.x
-      if (tx >= 0) distances.push(tx)
-    }
-    if (Math.abs(direction.y) > 1e-6) {
-      const boundY = direction.y > 0 ? HALF_LENGTH - BALL_RADIUS : -HALF_LENGTH + BALL_RADIUS
-      const ty = (boundY - pos.y) / direction.y
-      if (ty >= 0) distances.push(ty)
-    }
-    return distances.length ? Math.min(...distances) : Number.POSITIVE_INFINITY
-  }
-
-  private findBallBlockingCueChannel(
+  private measureSnookerConstraint(
     cueBallId: string,
     cuePos: Position2D,
-    direction: Position2D,
-    distance: number,
-    shaftRadius: number,
-  ): string | null {
-    let blockingBallId: string | null = null
-    let bestDistance = Number.POSITIVE_INFINITY
+    backwards: Position2D,
+  ): {
+    active: boolean
+    tipOffsetY: number
+    elevation: number
+  } {
+    let severity = 0
+    const shaftRadius = BALL_RADIUS * 0.5
+    const maxDistance = BALL_RADIUS * 3.6
 
     for (const ball of this.getActiveBalls()) {
       if (ball.id === cueBallId) continue
       const pos = worldToTable(ball.body.position)
       const rel = { x: pos.x - cuePos.x, y: pos.y - cuePos.y }
-      const along = rel.x * direction.x + rel.y * direction.y
-      if (along <= 0 || along >= distance) continue
+      const along = rel.x * backwards.x + rel.y * backwards.y
+      if (along <= BALL_RADIUS * 0.15 || along >= maxDistance) continue
 
-      const perpX = rel.x - direction.x * along
-      const perpY = rel.y - direction.y * along
+      const perpX = rel.x - backwards.x * along
+      const perpY = rel.y - backwards.y * along
       const perpDist = Math.hypot(perpX, perpY)
-      if (perpDist > BALL_RADIUS + shaftRadius) continue
+      const channelRadius = BALL_RADIUS + shaftRadius
+      if (perpDist >= channelRadius) continue
 
-      if (along < bestDistance) {
-        bestDistance = along
-        blockingBallId = ball.id
-      }
+      const overlapRatio = 1 - perpDist / channelRadius
+      const closenessRatio = 1 - (along - BALL_RADIUS * 0.15) / (maxDistance - BALL_RADIUS * 0.15)
+      severity = Math.max(severity, overlapRatio * 0.7 + closenessRatio * 0.3)
     }
 
-    return blockingBallId
+    if (severity <= 0.02) {
+      return { active: false, tipOffsetY: 0, elevation: 0 }
+    }
+
+    return {
+      active: true,
+      tipOffsetY: 0.28 + severity * 0.45,
+      elevation: 0.12 + severity * 0.32,
+    }
   }
 
   step(dt: number): string[] {
@@ -263,8 +322,8 @@ export class PlanePhysics {
 
     const potted: string[] = []
     const escapeMargin = BALL_RADIUS * 2
-    const maxX = HALF_WIDTH + CUSHION_WIDTH + escapeMargin
-    const maxZ = HALF_LENGTH + CUSHION_WIDTH + escapeMargin
+    const maxX = pcolTableCollisionModel.playfieldBounds.halfWidth + PCOL_TABLE_OUTER_CUSHION_WIDTH + escapeMargin
+    const maxZ = pcolTableCollisionModel.playfieldBounds.halfLength + PCOL_TABLE_OUTER_CUSHION_WIDTH + escapeMargin
     for (const ball of this.balls.values()) {
       if (ball.potted) continue
 
@@ -272,12 +331,12 @@ export class PlanePhysics {
       const pos = worldToTable(ball.body.position)
       const clamped = { x: pos.x, y: pos.y }
       if (Math.abs(clamped.x) > maxX) {
-        clamped.x = Math.sign(clamped.x) * (HALF_WIDTH + CUSHION_WIDTH)
+        clamped.x = Math.sign(clamped.x) * (pcolTableCollisionModel.playfieldBounds.halfWidth + PCOL_TABLE_OUTER_CUSHION_WIDTH)
         ball.body.velocity.set(0, 0, 0)
         ball.body.angularVelocity.set(0, 0, 0)
       }
       if (Math.abs(clamped.y) > maxZ) {
-        clamped.y = Math.sign(clamped.y) * (HALF_LENGTH + CUSHION_WIDTH)
+        clamped.y = Math.sign(clamped.y) * (pcolTableCollisionModel.playfieldBounds.halfLength + PCOL_TABLE_OUTER_CUSHION_WIDTH)
         ball.body.velocity.set(0, 0, 0)
         ball.body.angularVelocity.set(0, 0, 0)
       }

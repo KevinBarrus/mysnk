@@ -2,18 +2,10 @@ import * as THREE from 'three'
 import {
   BALL_COLORS,
   BALL_RADIUS,
-  CUSHION_HEIGHT,
   CUSHION_WIDTH,
-  D_RADIUS,
-  HALF_LENGTH,
-  HALF_WIDTH,
-  POCKET_RADIUS,
-  POCKETS,
-  SPOTS,
-  TABLE_LENGTH,
-  TABLE_WIDTH,
 } from '@/constants/table'
 import type { BallColor } from '@/constants/table'
+import { pcolTableRenderModel, pcolTableSpec } from '@/table/pcolTable'
 import type { Position2D } from '@/types/coords'
 import { tableToWorld } from '@/physics/PlanePhysics'
 
@@ -46,7 +38,7 @@ export class SnookerRenderer {
   private orbitAngle = Math.PI      // PI = behind table, 0 = in front
   private relYaw = 0                // relative yaw offset from "look at center"
   private relPitch = 0.15           // relative pitch offset
-  private readonly orbitRadius = mm(HALF_LENGTH + 1200)
+  private readonly orbitRadius = mm(pcolTableRenderModel.playfield.length / 2 + 1200)
   private readonly orbitHeight = mm(550)
 
   // Saved standing state (restored when exiting aiming mode) — no longer used but kept for reference
@@ -122,25 +114,23 @@ export class SnookerRenderer {
   }
 
   private buildTable(): void {
-    // === Scene-unit helpers ===
-    const cw = mm(CUSHION_WIDTH)     // cushion width
-    const ch = mm(CUSHION_HEIGHT)    // cushion height
-    const hw = mm(HALF_WIDTH)        // playing surface half-width
-    const hl = mm(HALF_LENGTH)       // playing surface half-length
-    const pr = mm(POCKET_RADIUS)     // pocket radius
-    const vcw = mm(14)               // visual cushion width (narrow)
-    const ww = mm(165)               // wood frame width
+    const cw = mm(CUSHION_WIDTH)
+    const ch = mm(pcolTableRenderModel.cushions[0]?.height ?? pcolTableSpec.visuals.cushionHeight)
+    const hw = mm(pcolTableRenderModel.playfield.width / 2)
+    const hl = mm(pcolTableRenderModel.playfield.length / 2)
+    const pr = mm(pcolTableSpec.pockets[0]?.cutoutArc?.radius ?? 0)
+    const ww = mm(pcolTableRenderModel.frame.railWidth)
 
-    // Wood frame inner edge = cushion outer edge
-    const iw = hw + cw               // inner half-width of wood frame
-    const il = hl + cw               // inner half-length
-    const ow = hw + cw + ww          // outer half-width
-    const ol = hl + cw + ww          // outer half-length
+    const iw = hw + cw
+    const il = hl + cw
+    const ow = hw + cw + ww
+    const ol = hl + cw + ww
 
-    // ──────────────────────────────────────────
-    // 1. Cloth (playing surface)
-    // ──────────────────────────────────────────
-    const feltMat = new THREE.MeshStandardMaterial({ color: 0x2D8A2F, roughness: 1, metalness: 0 })
+    const feltMat = new THREE.MeshStandardMaterial({
+      color: pcolTableSpec.visuals.clothColor,
+      roughness: 1,
+      metalness: 0,
+    })
     const felt = new THREE.Mesh(
       new THREE.PlaneGeometry(hw * 2, hl * 2),
       feltMat,
@@ -149,40 +139,41 @@ export class SnookerRenderer {
     felt.receiveShadow = true
     this.tableGroup.add(felt)
 
-    // ──────────────────────────────────────────
-    // 2. Cushion (green rubber, narrow, matte)
-    // ──────────────────────────────────────────
-    const cushionMat = new THREE.MeshStandardMaterial({ color: 0x2D8A2F, roughness: 1, metalness: 0 })
-    const halfGap = mm(POCKET_RADIUS * 1.1)
-    const longSegLen = hl - halfGap
-    const shortSideW = hw * 2 - mm(POCKET_RADIUS * 0.5) * 2
-
-    interface CushionSpec { w: number; h: number; d: number; pos: [number, number, number] }
-    const cushions: CushionSpec[] = [
-      // Short sides (minus corner gap)
-      { w: shortSideW, h: ch, d: vcw, pos: [0, ch / 2, -hl - vcw / 2] },
-      { w: shortSideW, h: ch, d: vcw, pos: [0, ch / 2, hl + vcw / 2] },
-      // Left long side — two segments, middle pocket gap
-      { w: vcw, h: ch, d: longSegLen, pos: [-hw - vcw / 2, ch / 2, -(hl + halfGap) / 2] },
-      { w: vcw, h: ch, d: longSegLen, pos: [-hw - vcw / 2, ch / 2, (hl + halfGap) / 2] },
-      // Right long side — two segments, middle pocket gap
-      { w: vcw, h: ch, d: longSegLen, pos: [hw + vcw / 2, ch / 2, -(hl + halfGap) / 2] },
-      { w: vcw, h: ch, d: longSegLen, pos: [hw + vcw / 2, ch / 2, (hl + halfGap) / 2] },
-    ]
-
-    for (const c of cushions) {
-      const geo = new THREE.BoxGeometry(c.w, c.h, c.d)
-      const mesh = new THREE.Mesh(geo, cushionMat)
-      mesh.position.set(...c.pos)
-      mesh.receiveShadow = true
-      this.tableGroup.add(mesh)
+    const cushionMat = new THREE.MeshStandardMaterial({
+      color: pcolTableSpec.visuals.cushionColor,
+      roughness: 1,
+      metalness: 0,
+    })
+    for (const cushion of pcolTableRenderModel.cushions) {
+      for (const segment of cushion.segments) {
+        const dx = segment.end.x - segment.start.x
+        const dy = segment.end.y - segment.start.y
+        const len = Math.hypot(dx, dy)
+        const center = {
+          x: (segment.start.x + segment.end.x) / 2,
+          y: (segment.start.y + segment.end.y) / 2,
+        }
+        const normal =
+          cushion.side === 'left' ? { x: -1, y: 0 }
+          : cushion.side === 'right' ? { x: 1, y: 0 }
+          : cushion.side === 'top' ? { x: 0, y: 1 }
+          : { x: 0, y: -1 }
+        const width = cushion.side === 'left' || cushion.side === 'right' ? cushion.visibleWidth : len
+        const depth = cushion.side === 'left' || cushion.side === 'right' ? len : cushion.visibleWidth
+        const geo = new THREE.BoxGeometry(mm(width), ch, mm(depth))
+        const mesh = new THREE.Mesh(geo, cushionMat)
+        mesh.position.set(
+          mm(center.x + normal.x * (cushion.visibleWidth / 2)),
+          ch / 2,
+          mm(center.y + normal.y * (cushion.visibleWidth / 2)),
+        )
+        mesh.receiveShadow = true
+        this.tableGroup.add(mesh)
+      }
     }
 
-    // ──────────────────────────────────────────
-    // 3. Wood frame (thick, brown, arc pocket cutouts)
-    // ──────────────────────────────────────────
     const woodMat = new THREE.MeshStandardMaterial({
-      color: 0x3A2416,
+      color: pcolTableRenderModel.frame.woodColor,
       roughness: 0.5,
       metalness: 0.05,
     })
@@ -214,44 +205,49 @@ export class SnookerRenderer {
     shape.holes.push(hole)
 
     const frameGeo = new THREE.ExtrudeGeometry(shape, {
-      depth: mm(45),
+      depth: mm(pcolTableRenderModel.frame.railDepth),
       bevelEnabled: true,
       bevelThickness: mm(2.5),
       bevelSize: mm(2),
       bevelSegments: 4,
     })
-    // Rotate to lay flat (extrusion goes up in scene)
     frameGeo.rotateX(-Math.PI / 2)
     const frameMesh = new THREE.Mesh(frameGeo, woodMat)
-    // Shift up so bottom is at y=0 (half of depth)
-    frameMesh.position.y = mm(22.5)
+    frameMesh.position.y = mm(pcolTableRenderModel.frame.railDepth / 2)
     frameMesh.receiveShadow = true
     frameMesh.castShadow = true
     this.tableGroup.add(frameMesh)
 
-    // ──────────────────────────────────────────
-    // 4. Baulk line + D
-    // ──────────────────────────────────────────
-    const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })
-    const baulkZ = mm(-HALF_LENGTH + 879)
+    const lineMat = new THREE.LineBasicMaterial({
+      color: pcolTableRenderModel.markings.baulkLine.color,
+      transparent: true,
+      opacity: pcolTableRenderModel.markings.baulkLine.opacity,
+    })
+    const baulkZ = mm(pcolTableRenderModel.markings.baulkLine.y)
     const baulkLine = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(-mm(HALF_WIDTH), 0.002, baulkZ),
-      new THREE.Vector3(mm(HALF_WIDTH), 0.002, baulkZ),
+      new THREE.Vector3(-hw, 0.002, baulkZ),
+      new THREE.Vector3(hw, 0.002, baulkZ),
     ])
     this.tableGroup.add(new THREE.Line(baulkLine, lineMat))
 
-    const dCurve = new THREE.EllipseCurve(0, baulkZ, mm(D_RADIUS), mm(D_RADIUS), 0, Math.PI, true, 0)
+    const dCurve = new THREE.EllipseCurve(
+      0,
+      baulkZ,
+      mm(pcolTableRenderModel.markings.spots.dRadius),
+      mm(pcolTableRenderModel.markings.spots.dRadius),
+      0,
+      Math.PI,
+      true,
+      0,
+    )
     const dPts = dCurve.getPoints(32).map((p) => new THREE.Vector3(p.x, 0.002, p.y))
     this.tableGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(dPts), lineMat))
 
-    // ──────────────────────────────────────────
-    // 5. Spot markers
-    // ──────────────────────────────────────────
     const spotMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 })
-    const spotGeo = new THREE.CircleGeometry(mm(4), 16)
+    const spotGeo = new THREE.CircleGeometry(mm(pcolTableRenderModel.markings.spotMarkerRadius), 16)
     spotGeo.rotateX(-Math.PI / 2)
     for (const key of ['blue', 'pink', 'black', 'green', 'brown', 'yellow'] as const) {
-      const s = SPOTS[key]
+      const s = pcolTableRenderModel.markings.spots[key]
       const m = new THREE.Mesh(spotGeo, spotMat)
       m.position.set(mm(s.x), 0.003, mm(s.y))
       this.tableGroup.add(m)
@@ -261,34 +257,26 @@ export class SnookerRenderer {
   }
 
   private buildPockets(): void {
-    const voidMat = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 1, metalness: 0 })
-    const rimMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.85, metalness: 0 })
-    const feltMat = new THREE.MeshStandardMaterial({ color: 0x2D8A2F, roughness: 1, metalness: 0 })
-    const pr = mm(POCKET_RADIUS)
+    const voidMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketInteriorColor, roughness: 1, metalness: 0 })
+    const rimMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketRimColor, roughness: 0.85, metalness: 0 })
+    const feltMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.clothColor, roughness: 1, metalness: 0 })
 
-    // Wood frame inner edge dimensions (same as buildTable)
     const cw = mm(CUSHION_WIDTH)
-    const hw = mm(HALF_WIDTH)
-    const hl = mm(HALF_LENGTH)
+    const hw = mm(pcolTableRenderModel.playfield.width / 2)
+    const hl = mm(pcolTableRenderModel.playfield.length / 2)
     const iw = hw + cw
     const il = hl + cw
 
-    // Cushion top face height — used as wrap upper bound
-    const ch = mm(CUSHION_HEIGHT)
+    for (const pocket of pcolTableSpec.pockets) {
+      const pos = tableVec(pocket.mouthCenter)
+      const isMiddle = pocket.kind === 'middle'
+      const pr = mm(pocket.cutoutArc?.radius ?? 0)
+      const arcPoints = this.getPocketArcPoints(pocket, iw, il, pr, 14)
 
-    for (const p of POCKETS) {
-      const pos = tableVec(p)
-      const isMiddle = p.y === 0
-      const arcPoints = this.getPocketArcPoints(p, iw, il, pr, 14)
-
-      // ————————————————————————————————————————————
-      // Layer 1: Deep pocket interior (black void)
-      // ————————————————————————————————————————————
       if (isMiddle) {
-        // Half-disk extrusion, shifted outward and lowered
         const shape = new THREE.Shape()
         shape.moveTo(0, 0)
-        if (p.x < 0) {
+        if (pocket.mouthCenter.x < 0) {
           shape.absarc(0, 0, pr * 1.1, -Math.PI / 2, Math.PI / 2, true)
         } else {
           shape.absarc(0, 0, pr * 1.1, Math.PI / 2, -Math.PI / 2, true)
@@ -300,7 +288,6 @@ export class SnookerRenderer {
         mesh.position.set(pos.x, -mm(5), pos.z)
         this.tableGroup.add(mesh)
       } else {
-        // Corner pocket: tapered cylinder below surface
         const mesh = new THREE.Mesh(
           new THREE.CylinderGeometry(pr * 0.9, pr * 1.15, mm(32), 22),
           voidMat,
@@ -309,49 +296,34 @@ export class SnookerRenderer {
         this.tableGroup.add(mesh)
       }
 
-      // If the pocket arc has no points, skip wrap layers
       if (arcPoints.length < 2) continue
 
-      // ————————————————————————————————————————————
-      // Layer 2: Black cushion/rim wrap
-      //   Sits between the felt wrap and the wood frame,
-      //   wider and deeper than the felt layer so it's
-      //   visible as a black band behind the felt edge.
-      // ————————————————————————————————————————————
       const rimDepth = mm(14)
       const rimOffset = pr * 0.32
-      const rimMesh = this.createPocketWrap(arcPoints, p, rimDepth, rimOffset, rimMat)
+      const rimMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, rimDepth, rimOffset, rimMat)
       rimMesh.position.y = -mm(2)
       this.tableGroup.add(rimMesh)
 
-      // ————————————————————————————————————————————
-      // Layer 3: Green felt wrap
-      //   The cloth surface curving downward and inward
-      //   along the pocket arc.
-      // ————————————————————————————————————————————
       const feltDepth = mm(10)
       const feltOffset = pr * 0.20
-      const feltMesh = this.createPocketWrap(arcPoints, p, feltDepth, feltOffset, feltMat)
+      const feltMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, feltDepth, feltOffset, feltMat)
       this.tableGroup.add(feltMesh)
     }
   }
 
-  /** Generate points along a pocket arc (quadratic bezier matching the wood frame cutout). */
   private getPocketArcPoints(
-    p: Position2D, iw: number, il: number, pr: number, segs: number,
+    pocket: (typeof pcolTableSpec.pockets)[number], iw: number, il: number, pr: number, segs: number,
   ): THREE.Vector3[] {
-    if (p.y === 0) {
-      // Middle pocket: half-circle bulging outward from the long side
-      const side = Math.sign(p.x)
+    if (pocket.kind === 'middle') {
+      const side = Math.sign(pocket.mouthCenter.x)
       const p0 = new THREE.Vector3(side * iw, 0, -pr)
       const p1 = new THREE.Vector3(side * (iw + pr), 0, 0)
       const p2 = new THREE.Vector3(side * iw, 0, pr)
       return new THREE.QuadraticBezierCurve3(p0, p1, p2).getPoints(segs)
     }
 
-    // Corner pocket — map to the correct corner
-    const sx = Math.sign(p.x)
-    const sz = Math.sign(p.y)
+    const sx = Math.sign(pocket.mouthCenter.x)
+    const sz = Math.sign(pocket.mouthCenter.y)
     let p0: THREE.Vector3, p1: THREE.Vector3, p2: THREE.Vector3
     if (sx < 0 && sz < 0) {
       p0 = new THREE.Vector3(-iw, 0, -il + pr)
@@ -373,7 +345,6 @@ export class SnookerRenderer {
     return new THREE.QuadraticBezierCurve3(p0, p1, p2).getPoints(segs)
   }
 
-  /** Create a ruled-surface ribbon along a pocket arc, sloping downward + outward. */
   private createPocketWrap(
     arcPoints: THREE.Vector3[],
     pocket: Position2D,
@@ -389,9 +360,7 @@ export class SnookerRenderer {
       const p = arcPoints[i]
       const dir = this.pocketOutwardDir(pocket)
 
-      // Top edge (at y=0, flush with playing surface)
       verts.push(p.x, 0, p.z)
-      // Bottom edge (below surface, offset outward into the pocket)
       verts.push(p.x + dir.x * outwardOffset, -depth, p.z + dir.z * outwardOffset)
     }
 
@@ -410,7 +379,6 @@ export class SnookerRenderer {
     return new THREE.Mesh(geo, material)
   }
 
-  /** Direction from the table outward into the pocket opening. */
   private pocketOutwardDir(pocket: Position2D): THREE.Vector3 {
     if (pocket.y === 0) {
       // Middle pocket: perpendicular to the long side
@@ -479,24 +447,23 @@ export class SnookerRenderer {
     }
   }
 
-  updateCue(cuePos: Position2D, aimDir: Position2D, power: number): void {
+  updateCue(
+    cuePos: Position2D,
+    aimDir: Position2D,
+    cueOffsetMm: number,
+    tipOffsetY = 0,
+    elevation = 0,
+  ): void {
     const origin = tableVec(cuePos)
     const len = Math.hypot(aimDir.x, aimDir.y) || 1
     const dir = new THREE.Vector3(aimDir.x / len, 0, aimDir.y / len)
 
-    const pullBack = mm(120 + power * 280)
-    const cueLen = mm(720) + pullBack // total from tip to butt in scene units
+    const tipHeight = mm(BALL_RADIUS + 2) + mm(BALL_RADIUS * tipOffsetY * 0.9)
+    const buttLift = mm(220 * elevation)
 
-    // Geometric check: if the butt end of the cue is past the playing surface → raise
-    const buttX = origin.x - dir.x * cueLen
-    const buttZ = origin.z - dir.z * cueLen
-    const onRail = Math.abs(buttX) > mm(HALF_WIDTH) || Math.abs(buttZ) > mm(HALF_LENGTH)
-    const height = onRail ? mm(CUSHION_HEIGHT) + mm(10) : mm(BALL_RADIUS) + mm(2)
-
-    this.cueMesh.position.set(origin.x, origin.y + height, origin.z)
-    this.cueMesh.position.add(dir.clone().multiplyScalar(-(mm(710) + pullBack)))
-    // When on the rail, keep cue horizontal (same height) so the whole shaft clears the rail top
-    const lookAtY = onRail ? origin.y + height : origin.y + mm(BALL_RADIUS)
+    this.cueMesh.position.set(origin.x, origin.y + tipHeight, origin.z)
+    this.cueMesh.position.add(dir.clone().multiplyScalar(-(mm(710 + cueOffsetMm))))
+    const lookAtY = origin.y + tipHeight - buttLift
     this.cueMesh.lookAt(new THREE.Vector3(origin.x, lookAtY, origin.z))
 
     // Aim line from cue ball forward

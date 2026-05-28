@@ -1,9 +1,27 @@
 import { createOpeningBalls } from '@/game/ballLayout'
-import { PlanePhysics, type ShotBlockReason } from '@/physics/PlanePhysics'
+import { PlanePhysics, type CueAddress, type ShotBlockReason } from '@/physics/PlanePhysics'
 import { SnookerRenderer } from '@/render/SnookerRenderer'
 import type { Position2D } from '@/types/coords'
 
 export type GamePhase = 'general' | 'aiming' | 'simulating' | 'ended'
+type CueStrokePhase = 'idle' | 'frontPause' | 'backswing' | 'forward'
+
+interface CueStrokeState {
+  phase: CueStrokePhase
+  elapsed: number
+  backswingDistance: number
+  strikePending: boolean
+}
+
+const FRONT_PAUSE_CUE_OFFSET_MM = 12
+const BASE_BACKSWING_MM = 32
+const MAX_BACKSWING_MM = 188
+const BACKSWING_REDUCTION_MM = 92
+const FRONT_PAUSE_DURATION = 0.09
+const BACKSWING_BASE_DURATION = 0.12
+const BACKSWING_POWER_DURATION = 0.18
+const FORWARD_DURATION = 0.1
+const STRIKE_CONTACT_OFFSET_MM = 4
 
 export class SnookerGame {
   private physics = new PlanePhysics()
@@ -27,6 +45,19 @@ export class SnookerGame {
 
   /** True while waiting for camera to finish standing up after a shot. */
   private standingUp = false
+  private cueStroke: CueStrokeState = {
+    phase: 'idle',
+    elapsed: 0,
+    backswingDistance: 0,
+    strikePending: false,
+  }
+  private cueAddress: CueAddress = {
+    blocked: false,
+    reason: null,
+    defaultTipOffsetY: 0,
+    requiredElevation: 0,
+    constrainedBy: 'none',
+  }
 
   private onPhaseChange?: (phase: GamePhase) => void
   private onPotted?: (ids: string[]) => void
@@ -95,7 +126,7 @@ export class SnookerGame {
     // --- Scroll: power in aiming only ---
     window.addEventListener('wheel', (e) => {
       e.preventDefault()
-      if (this.phase === 'aiming') {
+      if (this.phase === 'aiming' && !this.isCueStrokeAnimating()) {
         this.power = Math.max(0.05, Math.min(1, this.power + (e.deltaY > 0 ? -0.05 : 0.05)))
       }
     }, { passive: false })
@@ -160,6 +191,7 @@ export class SnookerGame {
       this.aimAngleDirty = false
     }
 
+    this.updateCueAddress()
     this.renderer.enterAimingMode(cuePos, this.aimDirection())
   }
 
@@ -171,8 +203,13 @@ export class SnookerGame {
   private syncAimCamera(): void {
     const cuePos = this.physics.getPosition(this.cueBallId)
     if (cuePos) {
+      this.updateCueAddress()
       this.renderer.updateAimingCamera(cuePos, this.aimDirection())
     }
+  }
+
+  private updateCueAddress(): void {
+    this.cueAddress = this.physics.evaluateCueAddress(this.cueBallId, this.aimDirection())
   }
 
   private aimDirection(): Position2D {
@@ -208,32 +245,35 @@ export class SnookerGame {
 
   private shoot(): void {
     const dir = this.aimDirection()
-    const shotCheck = this.physics.evaluateCueStrike(this.cueBallId, dir, this.power)
+    const shotCheck = this.physics.evaluateCueAddress(this.cueBallId, dir)
+    this.cueAddress = shotCheck
     if (shotCheck.blocked) {
-      this.onShotBlocked?.(this.getShotBlockedMessage(shotCheck.reason, shotCheck.blockingBallId))
+      this.onShotBlocked?.(this.getShotBlockedMessage(shotCheck.reason))
       return
     }
 
     this.onShotBlocked?.(null)
-    this.physics.strikeBall(this.cueBallId, dir, this.power)
-    this.setPhase('simulating')
-    this.aimAngleDirty = true
-    const target = this.findTargetBall() ?? undefined
-    this.renderer.exitAimingMode(target)
-    this.standingUp = true
+    if (this.isCueStrokeAnimating()) return
+
+    this.cueStroke = {
+      phase: 'backswing',
+      elapsed: 0,
+      backswingDistance: this.computeBackswingDistance(shotCheck),
+      strikePending: true,
+    }
   }
 
-  private getShotBlockedMessage(reason: ShotBlockReason | null, blockingBallId?: string): string {
+  private getShotBlockedMessage(reason: ShotBlockReason | null): string {
     switch (reason) {
       case 'cueBallMissing':
       case 'cueBallPotted':
         return 'Cue ball unavailable'
       case 'cueBallFrozenToRail':
-        return 'Cue ball is frozen to the rail'
+        return 'Cue ball overlaps the cushion'
       case 'cueBackswingBlockedByRail':
-        return 'Backswing blocked by the cushion'
+        return 'Cue direction unavailable'
       case 'cueBackswingBlockedByBall':
-        return blockingBallId ? `Backswing blocked by ${blockingBallId}` : 'Backswing blocked by another ball'
+        return 'Cue ball overlaps another ball'
       default:
         return 'Shot blocked'
     }
@@ -247,6 +287,12 @@ export class SnookerGame {
     this.aimAngleDirty = true
     this.power = 0.35
     this.standingUp = false
+    this.cueStroke = {
+      phase: 'idle',
+      elapsed: 0,
+      backswingDistance: 0,
+      strikePending: false,
+    }
     this.isDragging = false
     this.renderer.resetView()
     this.setPhase('general')
@@ -258,6 +304,100 @@ export class SnookerGame {
 
   getPhase(): GamePhase {
     return this.phase
+  }
+
+  private isCueStrokeAnimating(): boolean {
+    return this.cueStroke.phase === 'backswing' || this.cueStroke.phase === 'forward'
+  }
+
+  private computeBackswingDistance(cueAddress: CueAddress): number {
+    const baseDistance = BASE_BACKSWING_MM + this.power * (MAX_BACKSWING_MM - BASE_BACKSWING_MM)
+
+    if (cueAddress.constrainedBy === 'none') return baseDistance
+
+    const severity = Math.min(
+      1,
+      Math.max(cueAddress.defaultTipOffsetY, cueAddress.requiredElevation) / 0.55,
+    )
+
+    return Math.max(
+      FRONT_PAUSE_CUE_OFFSET_MM + 10,
+      baseDistance - BACKSWING_REDUCTION_MM * severity,
+    )
+  }
+
+  private startShotSimulation(): void {
+    this.setPhase('simulating')
+    this.aimAngleDirty = true
+    const target = this.findTargetBall() ?? undefined
+    this.renderer.exitAimingMode(target)
+    this.standingUp = true
+  }
+
+  private updateCueStroke(dt: number): void {
+    if (this.phase !== 'aiming') {
+      this.cueStroke.phase = 'idle'
+      this.cueStroke.elapsed = 0
+      this.cueStroke.backswingDistance = 0
+      this.cueStroke.strikePending = false
+      return
+    }
+
+    if (this.cueStroke.phase === 'idle') {
+      this.cueStroke.phase = 'frontPause'
+      this.cueStroke.elapsed = 0
+      return
+    }
+
+    this.cueStroke.elapsed += dt
+
+    if (this.cueStroke.phase === 'frontPause') {
+      if (this.cueStroke.elapsed >= FRONT_PAUSE_DURATION) {
+        this.cueStroke.elapsed = 0
+      }
+      return
+    }
+
+    if (this.cueStroke.phase === 'backswing') {
+      const duration = BACKSWING_BASE_DURATION + this.power * BACKSWING_POWER_DURATION
+      if (this.cueStroke.elapsed >= duration) {
+        this.cueStroke.phase = 'forward'
+        this.cueStroke.elapsed = 0
+      }
+      return
+    }
+
+    if (this.cueStroke.phase === 'forward') {
+      const contactProgress = Math.min(1, this.cueStroke.elapsed / FORWARD_DURATION)
+      const currentOffset = this.computeCueOffset()
+      if (this.cueStroke.strikePending && currentOffset <= STRIKE_CONTACT_OFFSET_MM) {
+        this.cueStroke.strikePending = false
+        this.physics.strikeBall(this.cueBallId, this.aimDirection(), this.power)
+        this.startShotSimulation()
+        return
+      }
+      if (contactProgress >= 1) {
+        this.cueStroke.phase = 'frontPause'
+        this.cueStroke.elapsed = 0
+        this.cueStroke.backswingDistance = 0
+        this.cueStroke.strikePending = false
+      }
+    }
+  }
+
+  private computeCueOffset(): number {
+    if (this.cueStroke.phase === 'backswing') {
+      const duration = BACKSWING_BASE_DURATION + this.power * BACKSWING_POWER_DURATION
+      const progress = Math.min(1, this.cueStroke.elapsed / duration)
+      return FRONT_PAUSE_CUE_OFFSET_MM + this.cueStroke.backswingDistance * progress
+    }
+
+    if (this.cueStroke.phase === 'forward') {
+      const progress = Math.min(1, this.cueStroke.elapsed / FORWARD_DURATION)
+      return FRONT_PAUSE_CUE_OFFSET_MM + this.cueStroke.backswingDistance * (1 - progress)
+    }
+
+    return FRONT_PAUSE_CUE_OFFSET_MM
   }
 
   private loop = (time: number): void => {
@@ -284,12 +424,16 @@ export class SnookerGame {
     }
 
     // Aiming-mode keyboard: A/D nudge aim angle
-    if (this.phase === 'aiming') {
+    if (this.phase === 'aiming' && !this.isCueStrokeAnimating()) {
       const nudge = 0.008
       if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) this.aimAngle -= nudge
       if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) this.aimAngle += nudge
       this.syncAimCamera()
+    } else if (this.phase === 'aiming') {
+      this.syncAimCamera()
     }
+
+    this.updateCueStroke(dt)
 
     if (this.phase === 'simulating') {
       if (this.standingUp && !this.renderer.isTransitionActive()) {
@@ -307,7 +451,13 @@ export class SnookerGame {
 
     const cuePos = this.physics.getPosition(this.cueBallId)
     if (cuePos && this.phase === 'aiming') {
-      this.renderer.updateCue(cuePos, this.aimDirection(), this.power)
+      this.renderer.updateCue(
+        cuePos,
+        this.aimDirection(),
+        this.computeCueOffset(),
+        this.cueAddress.defaultTipOffsetY,
+        this.cueAddress.requiredElevation,
+      )
       this.renderer.setAimLineVisible(true)
     } else {
       this.renderer.setCueVisible(false)
