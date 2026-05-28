@@ -1,5 +1,5 @@
 import { createOpeningBalls } from '@/game/ballLayout'
-import { PlanePhysics } from '@/physics/PlanePhysics'
+import { PlanePhysics, type ShotBlockReason } from '@/physics/PlanePhysics'
 import { SnookerRenderer } from '@/render/SnookerRenderer'
 import type { Position2D } from '@/types/coords'
 
@@ -30,6 +30,7 @@ export class SnookerGame {
 
   private onPhaseChange?: (phase: GamePhase) => void
   private onPotted?: (ids: string[]) => void
+  private onShotBlocked?: (message: string | null) => void
 
   constructor(container: HTMLElement) {
     this.renderer = new SnookerRenderer(container)
@@ -41,9 +42,11 @@ export class SnookerGame {
   setCallbacks(cb: {
     onPhaseChange?: (phase: GamePhase) => void
     onPotted?: (ids: string[]) => void
+    onShotBlocked?: (message: string | null) => void
   }): void {
     this.onPhaseChange = cb.onPhaseChange
     this.onPotted = cb.onPotted
+    this.onShotBlocked = cb.onShotBlocked
   }
 
   private resetBalls(): void {
@@ -205,12 +208,35 @@ export class SnookerGame {
 
   private shoot(): void {
     const dir = this.aimDirection()
+    const shotCheck = this.physics.evaluateCueStrike(this.cueBallId, dir, this.power)
+    if (shotCheck.blocked) {
+      this.onShotBlocked?.(this.getShotBlockedMessage(shotCheck.reason, shotCheck.blockingBallId))
+      return
+    }
+
+    this.onShotBlocked?.(null)
     this.physics.strikeBall(this.cueBallId, dir, this.power)
     this.setPhase('simulating')
     this.aimAngleDirty = true
     const target = this.findTargetBall() ?? undefined
     this.renderer.exitAimingMode(target)
     this.standingUp = true
+  }
+
+  private getShotBlockedMessage(reason: ShotBlockReason | null, blockingBallId?: string): string {
+    switch (reason) {
+      case 'cueBallMissing':
+      case 'cueBallPotted':
+        return 'Cue ball unavailable'
+      case 'cueBallFrozenToRail':
+        return 'Cue ball is frozen to the rail'
+      case 'cueBackswingBlockedByRail':
+        return 'Backswing blocked by the cushion'
+      case 'cueBackswingBlockedByBall':
+        return blockingBallId ? `Backswing blocked by ${blockingBallId}` : 'Backswing blocked by another ball'
+      default:
+        return 'Shot blocked'
+    }
   }
 
   private restart(): void {

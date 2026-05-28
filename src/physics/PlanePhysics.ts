@@ -21,6 +21,19 @@ export interface PhysicsBall {
   potted: boolean
 }
 
+export type ShotBlockReason =
+  | 'cueBallMissing'
+  | 'cueBallPotted'
+  | 'cueBallFrozenToRail'
+  | 'cueBackswingBlockedByRail'
+  | 'cueBackswingBlockedByBall'
+
+export interface ShotBlockResult {
+  blocked: boolean
+  reason: ShotBlockReason | null
+  blockingBallId?: string
+}
+
 /** Game (x,y) mm → cannon world (x, z) with Y-up. */
 export function tableToWorld(pos: Position2D): CANNON.Vec3 {
   return new CANNON.Vec3(pos.x, 0, pos.y)
@@ -125,6 +138,48 @@ export class PlanePhysics {
     this.balls.delete(id)
   }
 
+  evaluateCueStrike(id: string, direction: Position2D, power: number): ShotBlockResult {
+    const ball = this.balls.get(id)
+    if (!ball) {
+      return { blocked: true, reason: 'cueBallMissing' }
+    }
+    if (ball.potted) {
+      return { blocked: true, reason: 'cueBallPotted' }
+    }
+
+    const cuePos = worldToTable(ball.body.position)
+    const len = Math.hypot(direction.x, direction.y)
+    if (len < 1e-6) {
+      return { blocked: true, reason: 'cueBackswingBlockedByRail' }
+    }
+
+    const dir = { x: direction.x / len, y: direction.y / len }
+    const railClearance = this.getRailClearance(cuePos)
+    const railFrozenMargin = BALL_RADIUS * 0.18
+    const railBackswingMargin = BALL_RADIUS + 8
+    if (railClearance <= railFrozenMargin) {
+      return { blocked: true, reason: 'cueBallFrozenToRail' }
+    }
+
+    const pullBack = 120 + power * 280
+    const cueLength = 710 + pullBack
+    const shaftRadius = BALL_RADIUS * 0.45
+    const requiredBackswing = cueLength + shaftRadius
+    const backwards = { x: -dir.x, y: -dir.y }
+
+    const railTravel = this.distanceToRail(cuePos, backwards)
+    if (railTravel < requiredBackswing + railBackswingMargin) {
+      return { blocked: true, reason: 'cueBackswingBlockedByRail' }
+    }
+
+    const channel = this.findBallBlockingCueChannel(id, cuePos, backwards, requiredBackswing, shaftRadius)
+    if (channel) {
+      return { blocked: true, reason: 'cueBackswingBlockedByBall', blockingBallId: channel }
+    }
+
+    return { blocked: false, reason: null }
+  }
+
   /** Impulse in table plane (mm/s scale tuned for demo). */
   strikeBall(id: string, direction: Position2D, power: number): void {
     const ball = this.balls.get(id)
@@ -148,6 +203,59 @@ export class PlanePhysics {
     ball.body.wakeUp()
     ball.body.velocity.set(nx * impulse, 0, ny * impulse)
     ball.body.angularVelocity.set(0, 0, 0)
+  }
+
+  private getRailClearance(pos: Position2D): number {
+    return Math.min(
+      HALF_WIDTH - Math.abs(pos.x) - BALL_RADIUS,
+      HALF_LENGTH - Math.abs(pos.y) - BALL_RADIUS,
+    )
+  }
+
+  private distanceToRail(pos: Position2D, direction: Position2D): number {
+    const distances: number[] = []
+    if (Math.abs(direction.x) > 1e-6) {
+      const boundX = direction.x > 0 ? HALF_WIDTH - BALL_RADIUS : -HALF_WIDTH + BALL_RADIUS
+      const tx = (boundX - pos.x) / direction.x
+      if (tx >= 0) distances.push(tx)
+    }
+    if (Math.abs(direction.y) > 1e-6) {
+      const boundY = direction.y > 0 ? HALF_LENGTH - BALL_RADIUS : -HALF_LENGTH + BALL_RADIUS
+      const ty = (boundY - pos.y) / direction.y
+      if (ty >= 0) distances.push(ty)
+    }
+    return distances.length ? Math.min(...distances) : Number.POSITIVE_INFINITY
+  }
+
+  private findBallBlockingCueChannel(
+    cueBallId: string,
+    cuePos: Position2D,
+    direction: Position2D,
+    distance: number,
+    shaftRadius: number,
+  ): string | null {
+    let blockingBallId: string | null = null
+    let bestDistance = Number.POSITIVE_INFINITY
+
+    for (const ball of this.getActiveBalls()) {
+      if (ball.id === cueBallId) continue
+      const pos = worldToTable(ball.body.position)
+      const rel = { x: pos.x - cuePos.x, y: pos.y - cuePos.y }
+      const along = rel.x * direction.x + rel.y * direction.y
+      if (along <= 0 || along >= distance) continue
+
+      const perpX = rel.x - direction.x * along
+      const perpY = rel.y - direction.y * along
+      const perpDist = Math.hypot(perpX, perpY)
+      if (perpDist > BALL_RADIUS + shaftRadius) continue
+
+      if (along < bestDistance) {
+        bestDistance = along
+        blockingBallId = ball.id
+      }
+    }
+
+    return blockingBallId
   }
 
   step(dt: number): string[] {

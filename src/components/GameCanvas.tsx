@@ -7,6 +7,7 @@ export function GameCanvas() {
   const [phase, setPhase] = useState<GamePhase>('aiming')
   const [power, setPower] = useState(0.35)
   const [lastPotted, setLastPotted] = useState<string[]>([])
+  const [shotBlocked, setShotBlocked] = useState<string | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
@@ -20,6 +21,7 @@ export function GameCanvas() {
         setPower(game.getPower())
       },
       onPotted: (ids) => setLastPotted(ids),
+      onShotBlocked: (message) => setShotBlocked(message),
     })
 
     const interval = setInterval(() => {
@@ -54,6 +56,12 @@ export function GameCanvas() {
       <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 rounded bg-black/50 px-4 py-2 text-center text-xs text-white/80">
         Minimal table + balls + collision (club room in P3)
       </div>
+
+      {shotBlocked && (
+        <div className="pointer-events-none absolute left-1/2 top-20 -translate-x-1/2 rounded bg-black/70 px-4 py-2 text-sm font-semibold tracking-wide text-amber-300">
+          {shotBlocked}
+        </div>
+      )}
     </div>
   )
 }
