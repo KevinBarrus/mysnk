@@ -21,6 +21,7 @@ const FRONT_PAUSE_DURATION = 0.09
 const BACKSWING_BASE_DURATION = 0.12
 const BACKSWING_POWER_DURATION = 0.18
 const FORWARD_DURATION = 0.1
+const FORWARD_CONTACT_CUE_OFFSET_MM = 0
 const STRIKE_CONTACT_OFFSET_MM = 4
 
 export class SnookerGame {
@@ -394,7 +395,8 @@ export class SnookerGame {
 
     if (this.cueStroke.phase === 'forward') {
       const progress = Math.min(1, this.cueStroke.elapsed / FORWARD_DURATION)
-      return FRONT_PAUSE_CUE_OFFSET_MM + this.cueStroke.backswingDistance * (1 - progress)
+      return FORWARD_CONTACT_CUE_OFFSET_MM
+        + (FRONT_PAUSE_CUE_OFFSET_MM + this.cueStroke.backswingDistance - FORWARD_CONTACT_CUE_OFFSET_MM) * (1 - progress)
     }
 
     return FRONT_PAUSE_CUE_OFFSET_MM
