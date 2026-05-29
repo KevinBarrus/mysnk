@@ -96,6 +96,14 @@ export interface TableVisualSpec {
   spotMarkerRadius: number
   baulkLineColor: number
   baulkLineOpacity: number
+  // Cushion chrome trim strip
+  cushionTrimColor: number
+  cushionTrimHeight: number
+  cushionTrimWidth: number
+  // Pocket blocks (above-table visible geometry)
+  pocketBlockHeight: number
+  cornerBlockSize: number
+  middleBlockDepth: number
 }
 
 export interface TableSpec {

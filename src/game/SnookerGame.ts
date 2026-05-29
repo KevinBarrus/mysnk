@@ -4,12 +4,13 @@ import { SnookerRenderer } from '@/render/SnookerRenderer'
 import type { Position2D } from '@/types/coords'
 
 export type GamePhase = 'general' | 'aiming' | 'simulating' | 'ended'
-type CueStrokePhase = 'idle' | 'frontPause' | 'backswing' | 'forward'
+type CueStrokePhase = 'idle' | 'frontPause' | 'backswing' | 'forward' | 'followThroughHold' | 'postShot'
 
 interface CueStrokeState {
   phase: CueStrokePhase
   elapsed: number
   backswingDistance: number
+  recoveryStartOffset: number
   strikePending: boolean
 }
 
@@ -21,7 +22,10 @@ const FRONT_PAUSE_DURATION = 0.09
 const BACKSWING_BASE_DURATION = 0.12
 const BACKSWING_POWER_DURATION = 0.18
 const FORWARD_DURATION = 0.1
+const FOLLOW_THROUGH_HOLD_DURATION = 0.18
+const POST_SHOT_PRESENTATION_DURATION = 1.05
 const FORWARD_CONTACT_CUE_OFFSET_MM = 0
+const FOLLOW_THROUGH_EXTENSION_MM = 6
 const STRIKE_CONTACT_OFFSET_MM = 4
 
 export class SnookerGame {
@@ -44,12 +48,12 @@ export class SnookerGame {
   private dragLastX = 0
   private dragLastY = 0
 
-  /** True while waiting for camera to finish standing up after a shot. */
-  private standingUp = false
+  private pendingStandTarget?: Position2D
   private cueStroke: CueStrokeState = {
     phase: 'idle',
     elapsed: 0,
     backswingDistance: 0,
+    recoveryStartOffset: FRONT_PAUSE_CUE_OFFSET_MM,
     strikePending: false,
   }
   private cueAddress: CueAddress = {
@@ -260,6 +264,7 @@ export class SnookerGame {
       phase: 'backswing',
       elapsed: 0,
       backswingDistance: this.computeBackswingDistance(shotCheck),
+      recoveryStartOffset: FRONT_PAUSE_CUE_OFFSET_MM,
       strikePending: true,
     }
   }
@@ -287,11 +292,12 @@ export class SnookerGame {
     this.aimAngle = 0
     this.aimAngleDirty = true
     this.power = 0.35
-    this.standingUp = false
+    this.pendingStandTarget = undefined
     this.cueStroke = {
       phase: 'idle',
       elapsed: 0,
       backswingDistance: 0,
+      recoveryStartOffset: FRONT_PAUSE_CUE_OFFSET_MM,
       strikePending: false,
     }
     this.isDragging = false
@@ -308,7 +314,10 @@ export class SnookerGame {
   }
 
   private isCueStrokeAnimating(): boolean {
-    return this.cueStroke.phase === 'backswing' || this.cueStroke.phase === 'forward'
+    return this.cueStroke.phase === 'backswing'
+      || this.cueStroke.phase === 'forward'
+      || this.cueStroke.phase === 'followThroughHold'
+      || this.cueStroke.phase === 'postShot'
   }
 
   private computeBackswingDistance(cueAddress: CueAddress): number {
@@ -330,16 +339,23 @@ export class SnookerGame {
   private startShotSimulation(): void {
     this.setPhase('simulating')
     this.aimAngleDirty = true
-    const target = this.findTargetBall() ?? undefined
-    this.renderer.exitAimingMode(target)
-    this.standingUp = true
+    this.pendingStandTarget = this.findTargetBall() ?? undefined
+    const cuePos = this.physics.getPosition(this.cueBallId)
+    if (cuePos) {
+      this.renderer.beginPostShotPresentation(cuePos, this.aimDirection(), this.pendingStandTarget)
+    }
   }
 
   private updateCueStroke(dt: number): void {
-    if (this.phase !== 'aiming') {
+    if (
+      this.phase !== 'aiming'
+      && this.cueStroke.phase !== 'followThroughHold'
+      && this.cueStroke.phase !== 'postShot'
+    ) {
       this.cueStroke.phase = 'idle'
       this.cueStroke.elapsed = 0
       this.cueStroke.backswingDistance = 0
+      this.cueStroke.recoveryStartOffset = FRONT_PAUSE_CUE_OFFSET_MM
       this.cueStroke.strikePending = false
       return
     }
@@ -373,15 +389,47 @@ export class SnookerGame {
       const currentOffset = this.computeCueOffset()
       if (this.cueStroke.strikePending && currentOffset <= STRIKE_CONTACT_OFFSET_MM) {
         this.cueStroke.strikePending = false
+        this.cueStroke.recoveryStartOffset = Math.max(
+          0,
+          Math.min(FOLLOW_THROUGH_EXTENSION_MM, currentOffset),
+        )
+        this.cueStroke.phase = 'followThroughHold'
+        this.cueStroke.elapsed = 0
         this.physics.strikeBall(this.cueBallId, this.aimDirection(), this.power)
         this.startShotSimulation()
         return
       }
       if (contactProgress >= 1) {
-        this.cueStroke.phase = 'frontPause'
+        this.cueStroke.recoveryStartOffset = Math.max(
+          0,
+          Math.min(FOLLOW_THROUGH_EXTENSION_MM, currentOffset),
+        )
+        this.cueStroke.phase = 'followThroughHold'
+        this.cueStroke.elapsed = 0
+      }
+      return
+    }
+
+    if (this.cueStroke.phase === 'followThroughHold') {
+      if (this.cueStroke.elapsed >= FOLLOW_THROUGH_HOLD_DURATION) {
+        this.cueStroke.phase = 'postShot'
+        this.cueStroke.elapsed = 0
+      }
+      return
+    }
+
+    if (this.cueStroke.phase === 'postShot') {
+      if (this.cueStroke.elapsed >= POST_SHOT_PRESENTATION_DURATION) {
+        this.cueStroke.phase = this.phase === 'aiming' ? 'frontPause' : 'idle'
         this.cueStroke.elapsed = 0
         this.cueStroke.backswingDistance = 0
+        this.cueStroke.recoveryStartOffset = FRONT_PAUSE_CUE_OFFSET_MM
         this.cueStroke.strikePending = false
+        this.renderer.finishPostShotPresentation()
+        if (this.phase === 'simulating') {
+          this.setPhase('general')
+          this.pendingStandTarget = undefined
+        }
       }
     }
   }
@@ -397,6 +445,14 @@ export class SnookerGame {
       const progress = Math.min(1, this.cueStroke.elapsed / FORWARD_DURATION)
       return FORWARD_CONTACT_CUE_OFFSET_MM
         + (FRONT_PAUSE_CUE_OFFSET_MM + this.cueStroke.backswingDistance - FORWARD_CONTACT_CUE_OFFSET_MM) * (1 - progress)
+    }
+
+    if (this.cueStroke.phase === 'followThroughHold') {
+      return this.cueStroke.recoveryStartOffset
+    }
+
+    if (this.cueStroke.phase === 'postShot') {
+      return this.cueStroke.recoveryStartOffset
     }
 
     return FRONT_PAUSE_CUE_OFFSET_MM
@@ -437,10 +493,16 @@ export class SnookerGame {
 
     this.updateCueStroke(dt)
 
-    if (this.phase === 'simulating') {
-      if (this.standingUp && !this.renderer.isTransitionActive()) {
-        this.setPhase('general')
-        this.standingUp = false
+    if (this.phase === 'simulating' && this.cueStroke.phase === 'postShot') {
+      const postShotProgress = Math.min(1, this.cueStroke.elapsed / POST_SHOT_PRESENTATION_DURATION)
+      const cuePos = this.physics.getPosition(this.cueBallId)
+      if (cuePos) {
+        this.renderer.updatePostShotPresentation(
+          postShotProgress,
+          cuePos,
+          this.aimDirection(),
+          this.pendingStandTarget,
+        )
       }
     }
 
@@ -452,15 +514,26 @@ export class SnookerGame {
     }
 
     const cuePos = this.physics.getPosition(this.cueBallId)
-    if (cuePos && this.phase === 'aiming') {
+    const shouldRenderCue = cuePos && (
+      this.phase === 'aiming'
+      || this.cueStroke.phase === 'followThroughHold'
+      || this.cueStroke.phase === 'postShot'
+    )
+    if (shouldRenderCue && cuePos) {
+      const postShotProgress = this.cueStroke.phase === 'postShot'
+        ? Math.min(1, this.cueStroke.elapsed / POST_SHOT_PRESENTATION_DURATION)
+        : 0
       this.renderer.updateCue(
         cuePos,
         this.aimDirection(),
         this.computeCueOffset(),
         this.cueAddress.defaultTipOffsetY,
         this.cueAddress.requiredElevation,
+        this.cueStroke.phase === 'followThroughHold',
+        postShotProgress,
       )
-      this.renderer.setAimLineVisible(true)
+      this.renderer.setCueVisible(true)
+      this.renderer.setAimLineVisible(this.phase === 'aiming')
     } else {
       this.renderer.setCueVisible(false)
       this.renderer.setAimLineVisible(false)

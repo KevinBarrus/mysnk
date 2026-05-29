@@ -31,6 +31,7 @@ export class SnookerRenderer {
   private renderer: THREE.WebGLRenderer
   private ballMeshes = new Map<string, THREE.Mesh>()
   private cueMesh: THREE.Group
+  private cueRearSegment!: THREE.Mesh
   private aimLine: THREE.Line
   private tableGroup = new THREE.Group()
 
@@ -59,6 +60,11 @@ export class SnookerRenderer {
   private aimViewPitch = 0
   private lastAimCuePos: Position2D | null = null
   private lastAimDir: Position2D | null = null
+  private postShotActive = false
+  private postShotStartPos = new THREE.Vector3()
+  private postShotStartQuat = new THREE.Quaternion()
+  private postShotEndPos = new THREE.Vector3()
+  private postShotEndQuat = new THREE.Quaternion()
 
   constructor(container: HTMLElement) {
     this.scene.background = new THREE.Color(0x1a1510)
@@ -80,6 +86,7 @@ export class SnookerRenderer {
     this.updateCamera()
 
     this.buildLights()
+    this.buildRoom()
     this.buildTable()
     this.buildPockets()
 
@@ -113,6 +120,61 @@ export class SnookerRenderer {
     this.scene.add(fill)
   }
 
+  private buildRoom(): void {
+    // Room dimensions derived from PCOL reference (all in mm, then converted)
+    const HW = mm(2500)   // half-width  (x): 1611mm clearance on each side of table
+    const HL = mm(3500)   // half-length (z): 1716mm clearance on each table end
+    const floorY = mm(-850)              // 850mm below playing surface (table height)
+    const ceilY  = mm(1850)             // 2700mm room height from floor
+    const wallH  = ceilY - floorY
+    const midY   = (floorY + ceilY) / 2
+
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0xc07838,   // warm amber — PCOL reference
+      roughness: 0.88,
+      metalness: 0,
+    })
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x2a1508,   // deep brown — user spec
+      roughness: 0.95,
+      metalness: 0,
+    })
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0xf5f2ee,   // warm white — user spec
+      roughness: 0.95,
+      metalness: 0,
+    })
+
+    // Floor
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(HW * 2, HL * 2), floorMat)
+    floor.rotation.x = -Math.PI / 2
+    floor.position.y = floorY
+    floor.receiveShadow = true
+    this.scene.add(floor)
+
+    // Ceiling (faces down into room)
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(HW * 2, HL * 2), ceilMat)
+    ceiling.rotation.x = Math.PI / 2
+    ceiling.position.y = ceilY
+    this.scene.add(ceiling)
+
+    // Four walls — each plane normal faces room interior
+    // [plane width, plane height, world position, rotation.y]
+    const wallDefs: Array<[number, number, [number, number, number], number]> = [
+      [HW * 2, wallH, [0,    midY, -HL], 0],             // baulk-end wall (z-)
+      [HW * 2, wallH, [0,    midY,  HL], Math.PI],       // black-end wall (z+)
+      [HL * 2, wallH, [-HW,  midY,  0],  Math.PI / 2],   // left wall (x-)
+      [HL * 2, wallH, [ HW,  midY,  0], -Math.PI / 2],   // right wall (x+)
+    ]
+    for (const [w, h, pos, ry] of wallDefs) {
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), wallMat)
+      mesh.position.set(...pos)
+      mesh.rotation.y = ry
+      mesh.receiveShadow = true
+      this.scene.add(mesh)
+    }
+  }
+
   private buildTable(): void {
     const cw = mm(CUSHION_WIDTH)
     const ch = mm(pcolTableRenderModel.cushions[0]?.height ?? pcolTableSpec.visuals.cushionHeight)
@@ -144,6 +206,13 @@ export class SnookerRenderer {
       roughness: 1,
       metalness: 0,
     })
+    const trimMat = new THREE.MeshStandardMaterial({
+      color: pcolTableSpec.visuals.cushionTrimColor,
+      roughness: 0.1,
+      metalness: 0.9,
+    })
+    const trimH = mm(pcolTableSpec.visuals.cushionTrimHeight)
+    const trimW = mm(pcolTableSpec.visuals.cushionTrimWidth)
     for (const cushion of pcolTableRenderModel.cushions) {
       for (const segment of cushion.segments) {
         const dx = segment.end.x - segment.start.x
@@ -158,24 +227,35 @@ export class SnookerRenderer {
           : cushion.side === 'right' ? { x: 1, y: 0 }
           : cushion.side === 'top' ? { x: 0, y: 1 }
           : { x: 0, y: -1 }
-        const width = cushion.side === 'left' || cushion.side === 'right' ? cushion.visibleWidth : len
-        const depth = cushion.side === 'left' || cushion.side === 'right' ? len : cushion.visibleWidth
+        const isLong = cushion.side === 'left' || cushion.side === 'right'
+        const width = isLong ? cushion.visibleWidth : len
+        const depth = isLong ? len : cushion.visibleWidth
+        const cx = mm(center.x + normal.x * (cushion.visibleWidth / 2))
+        const cz = mm(center.y + normal.y * (cushion.visibleWidth / 2))
+
         const geo = new THREE.BoxGeometry(mm(width), ch, mm(depth))
         const mesh = new THREE.Mesh(geo, cushionMat)
-        mesh.position.set(
-          mm(center.x + normal.x * (cushion.visibleWidth / 2)),
-          ch / 2,
-          mm(center.y + normal.y * (cushion.visibleWidth / 2)),
-        )
+        mesh.position.set(cx, ch / 2, cz)
         mesh.receiveShadow = true
         this.tableGroup.add(mesh)
+
+        // Chrome trim strip on top of cushion rubber
+        const trimGeo = new THREE.BoxGeometry(
+          isLong ? trimW : mm(len),
+          trimH,
+          isLong ? mm(len) : trimW,
+        )
+        const trimMesh = new THREE.Mesh(trimGeo, trimMat)
+        trimMesh.position.set(cx, ch + trimH / 2, cz)
+        trimMesh.castShadow = true
+        this.tableGroup.add(trimMesh)
       }
     }
 
     const woodMat = new THREE.MeshStandardMaterial({
       color: pcolTableRenderModel.frame.woodColor,
-      roughness: 0.5,
-      metalness: 0.05,
+      roughness: 0.3,
+      metalness: 0.08,
     })
 
     // Outer boundary (CCW for Three.js Shape)
@@ -260,6 +340,33 @@ export class SnookerRenderer {
     const voidMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketInteriorColor, roughness: 1, metalness: 0 })
     const rimMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketRimColor, roughness: 0.85, metalness: 0 })
     const feltMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.clothColor, roughness: 1, metalness: 0 })
+
+    // Above-table pocket blocks (matte black surround visible at rail level)
+    const blockMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketRimColor, roughness: 0.9, metalness: 0 })
+    const blockH = mm(pcolTableSpec.visuals.pocketBlockHeight)
+    for (const pocket of pcolTableSpec.pockets) {
+      const mc = pocket.mouthCenter
+      if (pocket.kind === 'middle') {
+        const outSign = Math.sign(mc.x)
+        const d = pcolTableSpec.visuals.middleBlockDepth
+        const geo = new THREE.BoxGeometry(mm(d), blockH, mm(pocket.mouthWidth))
+        const blockMesh = new THREE.Mesh(geo, blockMat)
+        blockMesh.position.set(mm(mc.x + outSign * d / 2), blockH / 2, mm(mc.y))
+        blockMesh.castShadow = true
+        blockMesh.receiveShadow = true
+        this.tableGroup.add(blockMesh)
+      } else {
+        const sz = pcolTableSpec.visuals.cornerBlockSize
+        const sx = Math.sign(mc.x)
+        const sy = Math.sign(mc.y)
+        const geo = new THREE.BoxGeometry(mm(sz), blockH, mm(sz))
+        const blockMesh = new THREE.Mesh(geo, blockMat)
+        blockMesh.position.set(mm(mc.x + sx * sz / 2), blockH / 2, mm(mc.y + sy * sz / 2))
+        blockMesh.castShadow = true
+        blockMesh.receiveShadow = true
+        this.tableGroup.add(blockMesh)
+      }
+    }
 
     const cw = mm(CUSHION_WIDTH)
     const hw = mm(pcolTableRenderModel.playfield.width / 2)
@@ -397,6 +504,7 @@ export class SnookerRenderer {
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(mm(4.5), mm(6), mm(700), 12), wood)
     shaft.rotation.x = Math.PI / 2
     shaft.position.z = mm(350)
+    this.cueRearSegment = shaft
     const tip = new THREE.Mesh(
       new THREE.CylinderGeometry(mm(3.5), mm(3.5), mm(20), 12),
       new THREE.MeshStandardMaterial({ color: 0x3d8ec9 }),
@@ -453,18 +561,34 @@ export class SnookerRenderer {
     cueOffsetMm: number,
     tipOffsetY = 0,
     elevation = 0,
+    hideRearSegment = false,
+    postShotProgress = 0,
   ): void {
     const origin = tableVec(cuePos)
     const len = Math.hypot(aimDir.x, aimDir.y) || 1
     const dir = new THREE.Vector3(aimDir.x / len, 0, aimDir.y / len)
+    const right = new THREE.Vector3(dir.z, 0, -dir.x)
 
     const tipHeight = mm(BALL_RADIUS + 2) + mm(BALL_RADIUS * tipOffsetY * 0.9)
-    const buttLift = mm(220 * elevation)
+    const exitStart = Math.max(0, Math.min(1, (postShotProgress - 0.12) / 0.88))
+    const retreatProgress = exitStart * exitStart
+    const liftProgress = Math.pow(exitStart, 1.8)
+    const exitProgress = exitStart * exitStart * (3 - 2 * exitStart)
+    const retreatMm = cueOffsetMm + 46 * retreatProgress
+    const lateralMm = 240 * Math.pow(exitStart, 1.4)
+    const tipLiftMm = 10 * retreatProgress + 165 * liftProgress
+    const buttLift = mm(220 * elevation) + mm(430 * liftProgress)
 
-    this.cueMesh.position.set(origin.x, origin.y + tipHeight, origin.z)
-    this.cueMesh.position.add(dir.clone().multiplyScalar(-(mm(710 + cueOffsetMm))))
-    const lookAtY = origin.y + tipHeight - buttLift
-    this.cueMesh.lookAt(new THREE.Vector3(origin.x, lookAtY, origin.z))
+    this.cueMesh.position.set(origin.x, origin.y + tipHeight + mm(tipLiftMm), origin.z)
+    this.cueMesh.position.add(dir.clone().multiplyScalar(-mm(710 + retreatMm)))
+    this.cueMesh.position.add(right.multiplyScalar(mm(lateralMm)))
+    const lookAtTarget = new THREE.Vector3(
+      origin.x + dir.x * mm(50) + right.x * mm(170 * exitProgress),
+      origin.y + tipHeight - buttLift + mm(70 * liftProgress),
+      origin.z + dir.z * mm(50) + right.z * mm(170 * exitProgress),
+    )
+    this.cueMesh.lookAt(lookAtTarget)
+    this.cueRearSegment.visible = !hideRearSegment
 
     // Aim line from cue ball forward
     const start = new THREE.Vector3(origin.x, mm(2), origin.z)
@@ -482,6 +606,63 @@ export class SnookerRenderer {
   }
 
   // ───── Camera API ─────
+
+  beginPostShotPresentation(cuePos: Position2D, _aimDir: Position2D, watchTarget?: Position2D): void {
+    this.postShotActive = true
+    this.postShotStartPos.copy(this.camera.position)
+    this.postShotStartQuat.copy(this.camera.quaternion)
+
+    const exitTarget = watchTarget ? tableVec(watchTarget) : tableVec(cuePos)
+    const orbitPos = new THREE.Vector3(
+      Math.sin(this.orbitAngle) * this.orbitRadius,
+      this.orbitHeight,
+      Math.cos(this.orbitAngle) * this.orbitRadius,
+    )
+    this.postShotEndPos.copy(orbitPos)
+    const m = new THREE.Matrix4()
+    m.lookAt(orbitPos, exitTarget, new THREE.Vector3(0, 1, 0))
+    this.postShotEndQuat.setFromRotationMatrix(m)
+  }
+
+  updatePostShotPresentation(
+    progress: number,
+    cuePos: Position2D,
+    aimDir: Position2D,
+    watchTarget?: Position2D,
+  ): void {
+    if (!this.postShotActive) {
+      this.beginPostShotPresentation(cuePos, aimDir, watchTarget)
+    }
+
+    const startT = Math.max(0, Math.min(1, (progress - 0.1) / 0.9))
+    const eased = startT * startT * (3 - 2 * startT)
+    this.camera.position.lerpVectors(this.postShotStartPos, this.postShotEndPos, eased)
+    this.camera.quaternion.slerpQuaternions(this.postShotStartQuat, this.postShotEndQuat, eased)
+  }
+
+  finishPostShotPresentation(): void {
+    if (!this.postShotActive) return
+    this.postShotActive = false
+    this.cameraMode = 'standing'
+    this.camera.position.copy(this.postShotEndPos)
+    this.camera.quaternion.copy(this.postShotEndQuat)
+
+    const orbitPos = new THREE.Vector3(
+      Math.sin(this.orbitAngle) * this.orbitRadius,
+      this.orbitHeight,
+      Math.cos(this.orbitAngle) * this.orbitRadius,
+    )
+    const centerDir = new THREE.Vector3(0, 0, 0).sub(orbitPos).normalize()
+    const actualDir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
+    const centerXZ = new THREE.Vector3(centerDir.x, 0, centerDir.z).normalize()
+    const actualXZ = new THREE.Vector3(actualDir.x, 0, actualDir.z).normalize()
+    this.relYaw = Math.atan2(
+      centerXZ.x * actualXZ.z - centerXZ.z * actualXZ.x,
+      centerXZ.dot(actualXZ),
+    )
+    const horizMag = Math.hypot(actualDir.x, actualDir.z)
+    this.relPitch = -Math.atan2(actualDir.y, horizMag)
+  }
 
   /** Cast camera gaze ray onto table plane (y=0). Returns scene-space point or null. */
   getGazeTablePoint(): THREE.Vector3 | null {
@@ -634,7 +815,7 @@ export class SnookerRenderer {
   }
 
   isTransitionActive(): boolean {
-    return this.transActive
+    return this.transActive || this.postShotActive
   }
 
   /** Per-frame tick: advances camera transition with lerp + slerp. */

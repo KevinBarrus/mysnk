@@ -24,9 +24,9 @@ import {
   buildTableRenderModel,
 } from '@/table/buildTableModels'
 
-const MIDDLE_POCKET_HALF_GAP = POCKET_RADIUS * 1.1
-const CORNER_JAW_OFFSET = POCKET_RADIUS * 0.7
-const MIDDLE_JAW_OFFSET = POCKET_RADIUS * 0.65
+const MIDDLE_POCKET_HALF_GAP = 50                // mm — cushion gap half-width at middle pocket
+const CORNER_JAW_OFFSET = POCKET_RADIUS * 0.7    // 59.5 mm — diagonal opening ≈84 mm (standard ~85 mm)
+const MIDDLE_JAW_OFFSET = 43                     // mm — total opening 86 mm (standard snooker)
 const POCKET_ENTRY_DEPTH = 52.5 / 2 * 1.2
 
 function makeCushions(): CushionSegment[] {
@@ -331,8 +331,8 @@ export const pcolTableSpec: TableSpec = {
     ],
   },
   visuals: {
-    clothColor: 0x2d8a2f,
-    cushionColor: 0x2d8a2f,
+    clothColor: 0x1d5c2a,
+    cushionColor: 0x1a5426,
     woodColor: 0x3a2416,
     cushionVisibleWidth: 14,
     cushionHeight: CUSHION_HEIGHT,
@@ -344,6 +344,14 @@ export const pcolTableSpec: TableSpec = {
     spotMarkerRadius: 4,
     baulkLineColor: 0xffffff,
     baulkLineOpacity: 0.35,
+    // Chrome trim strip on cushion top edge
+    cushionTrimColor: 0xd4d4d0,
+    cushionTrimHeight: 5,
+    cushionTrimWidth: 8,
+    // Above-table pocket block geometry
+    pocketBlockHeight: 38,
+    cornerBlockSize: 110,
+    middleBlockDepth: 55,
   },
 }
 
