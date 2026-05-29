@@ -500,17 +500,17 @@ export class SnookerRenderer {
   private buildCue(): THREE.Group {
     const group = new THREE.Group()
     const wood = new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.5 })
-    // Cylinder is along Y; rotate to lie along Z. Tip at +Z (forward after lookAt).
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(mm(4.5), mm(6), mm(700), 12), wood)
+    // First-person view only shows the front section of the cue.
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(mm(4.2), mm(5.2), mm(260), 12), wood)
     shaft.rotation.x = Math.PI / 2
-    shaft.position.z = mm(350)
+    shaft.position.z = mm(130)
     this.cueRearSegment = shaft
     const tip = new THREE.Mesh(
       new THREE.CylinderGeometry(mm(3.5), mm(3.5), mm(20), 12),
       new THREE.MeshStandardMaterial({ color: 0x3d8ec9 }),
     )
     tip.rotation.x = Math.PI / 2
-    tip.position.z = mm(710)
+    tip.position.z = mm(270)
     group.add(shaft, tip)
     return group
   }
@@ -561,34 +561,29 @@ export class SnookerRenderer {
     cueOffsetMm: number,
     tipOffsetY = 0,
     elevation = 0,
-    hideRearSegment = false,
     postShotProgress = 0,
   ): void {
     const origin = tableVec(cuePos)
     const len = Math.hypot(aimDir.x, aimDir.y) || 1
     const dir = new THREE.Vector3(aimDir.x / len, 0, aimDir.y / len)
-    const right = new THREE.Vector3(dir.z, 0, -dir.x)
 
     const tipHeight = mm(BALL_RADIUS + 2) + mm(BALL_RADIUS * tipOffsetY * 0.9)
-    const exitStart = Math.max(0, Math.min(1, (postShotProgress - 0.12) / 0.88))
-    const retreatProgress = exitStart * exitStart
-    const liftProgress = Math.pow(exitStart, 1.8)
-    const exitProgress = exitStart * exitStart * (3 - 2 * exitStart)
-    const retreatMm = cueOffsetMm + 46 * retreatProgress
-    const lateralMm = 240 * Math.pow(exitStart, 1.4)
-    const tipLiftMm = 10 * retreatProgress + 165 * liftProgress
-    const buttLift = mm(220 * elevation) + mm(430 * liftProgress)
+    const exitStart = Math.max(0, Math.min(1, (postShotProgress - 0.16) / 0.84))
+    const retreatProgress = exitStart * exitStart * (3 - 2 * exitStart)
+    const liftProgress = Math.pow(exitStart, 2.2)
+    const retreatMm = cueOffsetMm + 88 * retreatProgress
+    const tipLiftMm = 8 + 22 * retreatProgress
+    const buttLift = mm(220 * elevation) + mm(520 * liftProgress)
 
     this.cueMesh.position.set(origin.x, origin.y + tipHeight + mm(tipLiftMm), origin.z)
-    this.cueMesh.position.add(dir.clone().multiplyScalar(-mm(710 + retreatMm)))
-    this.cueMesh.position.add(right.multiplyScalar(mm(lateralMm)))
+    this.cueMesh.position.add(dir.clone().multiplyScalar(-mm(270 + retreatMm)))
     const lookAtTarget = new THREE.Vector3(
-      origin.x + dir.x * mm(50) + right.x * mm(170 * exitProgress),
-      origin.y + tipHeight - buttLift + mm(70 * liftProgress),
-      origin.z + dir.z * mm(50) + right.z * mm(170 * exitProgress),
+      origin.x + dir.x * mm(36),
+      origin.y + tipHeight - buttLift + mm(40 * liftProgress),
+      origin.z + dir.z * mm(36),
     )
     this.cueMesh.lookAt(lookAtTarget)
-    this.cueRearSegment.visible = !hideRearSegment
+    this.cueRearSegment.visible = true
 
     // Aim line from cue ball forward
     const start = new THREE.Vector3(origin.x, mm(2), origin.z)

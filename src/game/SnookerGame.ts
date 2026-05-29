@@ -49,6 +49,8 @@ export class SnookerGame {
   private dragLastY = 0
 
   private pendingStandTarget?: Position2D
+  private postShotCuePos: Position2D | null = null
+  private postShotAimDir: Position2D | null = null
   private cueStroke: CueStrokeState = {
     phase: 'idle',
     elapsed: 0,
@@ -95,8 +97,6 @@ export class SnookerGame {
 
   private setPhase(phase: GamePhase): void {
     this.phase = phase
-    this.renderer.setCueVisible(phase === 'aiming')
-    this.renderer.setAimLineVisible(phase === 'aiming')
     this.onPhaseChange?.(phase)
   }
 
@@ -293,6 +293,8 @@ export class SnookerGame {
     this.aimAngleDirty = true
     this.power = 0.35
     this.pendingStandTarget = undefined
+    this.postShotCuePos = null
+    this.postShotAimDir = null
     this.cueStroke = {
       phase: 'idle',
       elapsed: 0,
@@ -340,10 +342,6 @@ export class SnookerGame {
     this.setPhase('simulating')
     this.aimAngleDirty = true
     this.pendingStandTarget = this.findTargetBall() ?? undefined
-    const cuePos = this.physics.getPosition(this.cueBallId)
-    if (cuePos) {
-      this.renderer.beginPostShotPresentation(cuePos, this.aimDirection(), this.pendingStandTarget)
-    }
   }
 
   private updateCueStroke(dt: number): void {
@@ -391,8 +389,10 @@ export class SnookerGame {
         this.cueStroke.strikePending = false
         this.cueStroke.recoveryStartOffset = Math.max(
           0,
-          Math.min(FOLLOW_THROUGH_EXTENSION_MM, currentOffset),
+          Math.min(2, currentOffset),
         )
+        this.postShotCuePos = this.physics.getPosition(this.cueBallId)
+        this.postShotAimDir = this.aimDirection()
         this.cueStroke.phase = 'followThroughHold'
         this.cueStroke.elapsed = 0
         this.physics.strikeBall(this.cueBallId, this.aimDirection(), this.power)
@@ -402,8 +402,10 @@ export class SnookerGame {
       if (contactProgress >= 1) {
         this.cueStroke.recoveryStartOffset = Math.max(
           0,
-          Math.min(FOLLOW_THROUGH_EXTENSION_MM, currentOffset),
+          Math.min(2, currentOffset),
         )
+        this.postShotCuePos = this.physics.getPosition(this.cueBallId)
+        this.postShotAimDir = this.aimDirection()
         this.cueStroke.phase = 'followThroughHold'
         this.cueStroke.elapsed = 0
       }
@@ -414,6 +416,13 @@ export class SnookerGame {
       if (this.cueStroke.elapsed >= FOLLOW_THROUGH_HOLD_DURATION) {
         this.cueStroke.phase = 'postShot'
         this.cueStroke.elapsed = 0
+        if (this.postShotCuePos && this.postShotAimDir) {
+          this.renderer.beginPostShotPresentation(
+            this.postShotCuePos,
+            this.postShotAimDir,
+            this.pendingStandTarget,
+          )
+        }
       }
       return
     }
@@ -425,6 +434,8 @@ export class SnookerGame {
         this.cueStroke.backswingDistance = 0
         this.cueStroke.recoveryStartOffset = FRONT_PAUSE_CUE_OFFSET_MM
         this.cueStroke.strikePending = false
+        this.postShotCuePos = null
+        this.postShotAimDir = null
         this.renderer.finishPostShotPresentation()
         if (this.phase === 'simulating') {
           this.setPhase('general')
@@ -495,12 +506,11 @@ export class SnookerGame {
 
     if (this.phase === 'simulating' && this.cueStroke.phase === 'postShot') {
       const postShotProgress = Math.min(1, this.cueStroke.elapsed / POST_SHOT_PRESENTATION_DURATION)
-      const cuePos = this.physics.getPosition(this.cueBallId)
-      if (cuePos) {
+      if (this.postShotCuePos && this.postShotAimDir) {
         this.renderer.updatePostShotPresentation(
           postShotProgress,
-          cuePos,
-          this.aimDirection(),
+          this.postShotCuePos,
+          this.postShotAimDir,
           this.pendingStandTarget,
         )
       }
@@ -513,23 +523,30 @@ export class SnookerGame {
       }
     }
 
-    const cuePos = this.physics.getPosition(this.cueBallId)
-    const shouldRenderCue = cuePos && (
+    const liveCuePos = this.physics.getPosition(this.cueBallId)
+    const renderCuePos =
+      (this.cueStroke.phase === 'followThroughHold' || this.cueStroke.phase === 'postShot')
+        ? this.postShotCuePos
+        : liveCuePos
+    const renderAimDir =
+      (this.cueStroke.phase === 'followThroughHold' || this.cueStroke.phase === 'postShot')
+        ? this.postShotAimDir
+        : this.aimDirection()
+    const shouldRenderCue = renderCuePos && renderAimDir && (
       this.phase === 'aiming'
       || this.cueStroke.phase === 'followThroughHold'
       || this.cueStroke.phase === 'postShot'
     )
-    if (shouldRenderCue && cuePos) {
+    if (shouldRenderCue && renderCuePos && renderAimDir) {
       const postShotProgress = this.cueStroke.phase === 'postShot'
         ? Math.min(1, this.cueStroke.elapsed / POST_SHOT_PRESENTATION_DURATION)
         : 0
       this.renderer.updateCue(
-        cuePos,
-        this.aimDirection(),
+        renderCuePos,
+        renderAimDir,
         this.computeCueOffset(),
         this.cueAddress.defaultTipOffsetY,
         this.cueAddress.requiredElevation,
-        this.cueStroke.phase === 'followThroughHold',
         postShotProgress,
       )
       this.renderer.setCueVisible(true)
