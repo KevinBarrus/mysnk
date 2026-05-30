@@ -119,6 +119,7 @@ export class PlanePhysics {
           for (const [ballId, b] of this.balls) {
             if (b.body === e.body) {
               this.firstContactBallId = ballId
+              console.log('[PlanePhysics] First contact:', ballId)
               break
             }
           }

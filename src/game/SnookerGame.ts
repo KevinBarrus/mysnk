@@ -1,6 +1,7 @@
 import { createOpeningBalls } from '@/game/ballLayout'
 import { PlanePhysics, type CueAddress, type ShotBlockReason } from '@/physics/PlanePhysics'
 import { SnookerRenderer } from '@/render/SnookerRenderer'
+import { SnookerRules, type FoulInfo, type RulesState } from '@/rules/SnookerRules'
 import type { Position2D } from '@/types/coords'
 
 export type GamePhase = 'general' | 'aiming' | 'simulating' | 'ended'
@@ -30,9 +31,15 @@ const STRIKE_CONTACT_OFFSET_MM = 4
 export class SnookerGame {
   private physics = new PlanePhysics()
   private renderer: SnookerRenderer
+  private rules = new SnookerRules()
   private raf = 0
   private lastTime = 0
   private inputEnabled = false
+
+  /** Balls potted during the current shot, accumulated until settlement. */
+  private shotPottedIds: string[] = []
+  /** Prevents the settlement handler from firing more than once per shot. */
+  private shotSettledFired = false
 
   private phase: GamePhase = 'general'
   private aimAngle = 0
@@ -69,6 +76,8 @@ export class SnookerGame {
   private onPhaseChange?: (phase: GamePhase) => void
   private onPotted?: (ids: string[]) => void
   private onShotBlocked?: (message: string | null) => void
+  private onScoreUpdate?: (state: RulesState) => void
+  private onFoul?: (foul: FoulInfo | null) => void
 
   constructor(container: HTMLElement) {
     this.renderer = new SnookerRenderer(container)
@@ -81,10 +90,14 @@ export class SnookerGame {
     onPhaseChange?: (phase: GamePhase) => void
     onPotted?: (ids: string[]) => void
     onShotBlocked?: (message: string | null) => void
+    onScoreUpdate?: (state: RulesState) => void
+    onFoul?: (foul: FoulInfo | null) => void
   }): void {
     this.onPhaseChange = cb.onPhaseChange
     this.onPotted = cb.onPotted
     this.onShotBlocked = cb.onShotBlocked
+    this.onScoreUpdate = cb.onScoreUpdate
+    this.onFoul = cb.onFoul
   }
 
   setInputEnabled(enabled: boolean): void {
@@ -107,6 +120,7 @@ export class SnookerGame {
   }
 
   private setPhase(phase: GamePhase): void {
+    console.log('[SnookerGame] Phase change:', this.phase, '->', phase)
     this.phase = phase
     this.onPhaseChange?.(phase)
   }
@@ -304,6 +318,9 @@ export class SnookerGame {
     this.physics = new PlanePhysics()
     this.renderer.clearAllBalls()
     this.resetBalls()
+    this.rules.reset()
+    this.shotPottedIds = []
+    this.shotSettledFired = false
     this.aimAngle = 0
     this.aimAngleDirty = true
     this.power = 0.35
@@ -320,6 +337,8 @@ export class SnookerGame {
     this.isDragging = false
     this.renderer.resetView()
     this.setPhase('general')
+    this.onScoreUpdate?.(this.rules.getState())
+    this.onFoul?.(null)
   }
 
   getPower(): number {
@@ -418,6 +437,8 @@ export class SnookerGame {
         this.postShotAimDir = this.aimDirection()
         this.cueStroke.phase = 'followThroughHold'
         this.cueStroke.elapsed = 0
+        this.shotPottedIds = []
+        this.shotSettledFired = false
         this.physics.strikeBall(this.cueBallId, this.aimDirection(), this.power)
         this.startShotSimulation()
         return
@@ -461,6 +482,24 @@ export class SnookerGame {
         this.postShotAimDir = null
         this.renderer.finishPostShotPresentation()
         if (this.phase === 'simulating') {
+          // Settle shot before returning to general
+          if (!this.shotSettledFired) {
+            this.shotSettledFired = true
+            const firstContact = this.physics.getFirstContact()
+            console.log('[SnookerGame] Shot settled (postShot end):', {
+              firstContact,
+              potted: this.shotPottedIds,
+            })
+            const result = this.rules.processShot(
+              firstContact,
+              this.shotPottedIds,
+              'practice',
+            )
+            console.log('[SnookerGame] Rules result:', result)
+            this.onPotted?.(this.shotPottedIds)
+            this.onScoreUpdate?.(this.rules.getState())
+            this.onFoul?.(result.foul)
+          }
           this.setPhase('general')
           this.pendingStandTarget = undefined
         }
@@ -500,7 +539,7 @@ export class SnookerGame {
     // Step physics while any ball is moving (shot settling)
     if (!this.physics.allSleeping()) {
       const potted = this.physics.step(dt)
-      if (potted.length) this.onPotted?.(potted)
+      if (potted.length) this.shotPottedIds.push(...potted)
     }
 
     // General-mode keyboard orbit: A/D orbit around the table

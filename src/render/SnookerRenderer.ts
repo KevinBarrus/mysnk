@@ -233,42 +233,18 @@ export class SnookerRenderer {
     const trimW = mm(pcolTableSpec.visuals.cushionTrimWidth)
     for (const cushion of pcolTableRenderModel.cushions) {
       for (const segment of cushion.segments) {
-        const dx = segment.end.x - segment.start.x
-        const dy = segment.end.y - segment.start.y
-        const len = Math.hypot(dx, dy)
-        const center = {
-          x: (segment.start.x + segment.end.x) / 2,
-          y: (segment.start.y + segment.end.y) / 2,
-        }
-        const normal =
-          cushion.side === 'left' ? { x: -1, y: 0 }
-          : cushion.side === 'right' ? { x: 1, y: 0 }
-          : cushion.side === 'top' ? { x: 0, y: 1 }
-          : { x: 0, y: -1 }
-        const isLong = cushion.side === 'left' || cushion.side === 'right'
-        const width = isLong ? cushion.visibleWidth : len
-        const depth = isLong ? len : cushion.visibleWidth
-        const cx = mm(center.x + normal.x * (cushion.visibleWidth / 2))
-        const cz = mm(center.y + normal.y * (cushion.visibleWidth / 2))
-
-        const geo = new THREE.BoxGeometry(mm(width), ch, mm(depth))
-        const mesh = new THREE.Mesh(geo, cushionMat)
-        mesh.position.set(cx, ch / 2, cz)
+        const mesh = this.createCushionBodyMesh(cushion.side, segment, CUSHION_WIDTH, ch, cushionMat)
         mesh.receiveShadow = true
+        mesh.castShadow = true
         this.tableGroup.add(mesh)
 
-        // Chrome trim strip on top of cushion rubber
-        const trimGeo = new THREE.BoxGeometry(
-          isLong ? trimW : mm(len),
-          trimH,
-          isLong ? mm(len) : trimW,
-        )
-        const trimMesh = new THREE.Mesh(trimGeo, trimMat)
-        trimMesh.position.set(cx, ch + trimH / 2, cz)
+        const trimMesh = this.createCushionTrimMesh(cushion.side, segment, CUSHION_WIDTH, ch, trimW, trimH, trimMat)
         trimMesh.castShadow = true
         this.tableGroup.add(trimMesh)
       }
     }
+
+    this.buildCornerCushionFillers(ch, cushionMat, trimMat, trimW, trimH)
 
     const woodMat = new THREE.MeshStandardMaterial({
       color: pcolTableRenderModel.frame.woodColor,
@@ -354,6 +330,185 @@ export class SnookerRenderer {
     this.scene.add(this.tableGroup)
   }
 
+  private buildCornerCushionFillers(
+    cushionHeight: number,
+    cushionMat: THREE.Material,
+    trimMat: THREE.Material,
+    trimWidth: number,
+    trimHeight: number,
+  ): void {
+    const halfW = pcolTableRenderModel.playfield.width / 2
+    const halfL = pcolTableRenderModel.playfield.length / 2
+    const innerRadius = 18
+    const outerRadius = CUSHION_WIDTH
+
+    for (const sx of [-1, 1] as const) {
+      for (const sy of [-1, 1] as const) {
+        const centerX = sx * (halfW - innerRadius)
+        const centerY = sy * (halfL - innerRadius)
+        const body = this.createCornerCushionArcMesh(
+          centerX,
+          centerY,
+          sx,
+          sy,
+          innerRadius,
+          outerRadius,
+          cushionHeight,
+          cushionMat,
+        )
+        body.castShadow = true
+        body.receiveShadow = true
+        this.tableGroup.add(body)
+
+        const trim = this.createCornerCushionArcMesh(
+          centerX,
+          centerY,
+          sx,
+          sy,
+          outerRadius - trimWidth / MM_TO_SCENE,
+          outerRadius,
+          trimHeight,
+          trimMat,
+        )
+        trim.position.y = cushionHeight
+        trim.castShadow = true
+        this.tableGroup.add(trim)
+      }
+    }
+  }
+
+  private createCornerCushionArcMesh(
+    centerXmm: number,
+    centerYmm: number,
+    sx: -1 | 1,
+    sy: -1 | 1,
+    innerRadiusMm: number,
+    outerRadiusMm: number,
+    height: number,
+    material: THREE.Material,
+  ): THREE.Mesh {
+    const shape = new THREE.Shape()
+    const startAngle = sx < 0 && sy < 0 ? Math.PI
+      : sx > 0 && sy < 0 ? Math.PI * 1.5
+      : sx > 0 && sy > 0 ? 0
+      : Math.PI / 2
+    const endAngle = startAngle + Math.PI / 2
+
+    shape.absarc(mm(centerXmm), mm(centerYmm), mm(outerRadiusMm), startAngle, endAngle, false)
+
+    const hole = new THREE.Path()
+    hole.absarc(mm(centerXmm), mm(centerYmm), mm(innerRadiusMm), endAngle, startAngle, true)
+    shape.holes.push(hole)
+
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: height,
+      bevelEnabled: false,
+    })
+    geo.rotateX(-Math.PI / 2)
+    const mesh = new THREE.Mesh(geo, material)
+    mesh.position.y = height
+    return mesh
+  }
+
+  private createCushionBodyMesh(
+    side: 'top' | 'bottom' | 'left' | 'right',
+    segment: { start: Position2D; end: Position2D },
+    visibleWidthMm: number,
+    height: number,
+    material: THREE.Material,
+  ): THREE.Mesh {
+    const taperStartMm = this.getCushionTaperMm(side, segment.start)
+    const taperEndMm = this.getCushionTaperMm(side, segment.end)
+    const shape = this.buildCushionProfileShape(side, segment, visibleWidthMm, taperStartMm, taperEndMm)
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: height,
+      bevelEnabled: true,
+      bevelThickness: mm(1.2),
+      bevelSize: mm(1),
+      bevelSegments: 2,
+    })
+    geo.rotateX(-Math.PI / 2)
+    const mesh = new THREE.Mesh(geo, material)
+    mesh.position.y = height
+    return mesh
+  }
+
+  private createCushionTrimMesh(
+    side: 'top' | 'bottom' | 'left' | 'right',
+    segment: { start: Position2D; end: Position2D },
+    visibleWidthMm: number,
+    cushionHeight: number,
+    trimWidth: number,
+    trimHeight: number,
+    material: THREE.Material,
+  ): THREE.Mesh {
+    const inset = (visibleWidthMm - trimWidth / MM_TO_SCENE) / 2
+    const taperStartMm = Math.max(0, this.getCushionTaperMm(side, segment.start) - inset)
+    const taperEndMm = Math.max(0, this.getCushionTaperMm(side, segment.end) - inset)
+    const shape = this.buildCushionProfileShape(
+      side,
+      segment,
+      trimWidth / MM_TO_SCENE,
+      taperStartMm,
+      taperEndMm,
+    )
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: trimHeight,
+      bevelEnabled: false,
+    })
+    geo.rotateX(-Math.PI / 2)
+    const mesh = new THREE.Mesh(geo, material)
+    mesh.position.y = cushionHeight + trimHeight
+    return mesh
+  }
+
+  private buildCushionProfileShape(
+    side: 'top' | 'bottom' | 'left' | 'right',
+    segment: { start: Position2D; end: Position2D },
+    visibleWidthMm: number,
+    taperStartMm: number,
+    taperEndMm: number,
+  ): THREE.Shape {
+    const axis = side === 'left' || side === 'right' ? 'y' : 'x'
+    const normalSign = side === 'left' || side === 'top' ? -1 : 1
+    const start = segment.start[axis]
+    const end = segment.end[axis]
+    const min = Math.min(start, end)
+    const max = Math.max(start, end)
+    const inner = side === 'left' || side === 'right'
+      ? segment.start.x
+      : segment.start.y
+    const outer = inner + normalSign * visibleWidthMm
+
+    const shape = new THREE.Shape()
+
+    if (axis === 'x') {
+      shape.moveTo(mm(min + taperStartMm), mm(inner))
+      shape.lineTo(mm(max - taperEndMm), mm(inner))
+      shape.lineTo(mm(max), mm(outer))
+      shape.lineTo(mm(min), mm(outer))
+    } else {
+      shape.moveTo(mm(inner), mm(min + taperStartMm))
+      shape.lineTo(mm(inner), mm(max - taperEndMm))
+      shape.lineTo(mm(outer), mm(max))
+      shape.lineTo(mm(outer), mm(min))
+    }
+
+    shape.closePath()
+    return shape
+  }
+
+  private getCushionTaperMm(side: 'top' | 'bottom' | 'left' | 'right', point: Position2D): number {
+    if (side === 'top' || side === 'bottom') {
+      if (Math.abs(point.x) > pcolTableRenderModel.playfield.width / 2 - 120) return 42
+      return 0
+    }
+
+    if (Math.abs(point.y) < 80) return 34
+    if (Math.abs(point.y) > pcolTableRenderModel.playfield.length / 2 - 120) return 42
+    return 0
+  }
+
   private buildPockets(): void {
     const voidMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketInteriorColor, roughness: 1, metalness: 0 })
     const rimMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketRimColor, roughness: 0.85, metalness: 0 })
@@ -398,14 +553,14 @@ export class SnookerRenderer {
 
       if (arcPoints.length < 2) continue
 
-      const rimDepth = mm(20)
-      const rimOffset = pr * 0.42
+      const rimDepth = mm(isMiddle ? 20 : 24)
+      const rimOffset = pr * (isMiddle ? 0.42 : 0.30)
       const rimMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, rimDepth, rimOffset, rimMat)
-      rimMesh.position.y = -mm(1)
+      rimMesh.position.y = -mm(isMiddle ? 1 : 3)
       this.tableGroup.add(rimMesh)
 
       const feltDepth = mm(12)
-      const feltOffset = pr * 0.24
+      const feltOffset = pr * (isMiddle ? 0.24 : 0.18)
       const feltMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, feltDepth, feltOffset, feltMat)
       this.tableGroup.add(feltMesh)
     }
@@ -467,22 +622,25 @@ export class SnookerRenderer {
     height: number,
     material: THREE.Material,
   ): THREE.Mesh {
-    const sizeMm = pcolTableSpec.visuals.cornerBlockSize + 22
-    const radiusMm = sizeMm * 0.42
-    const innerRadiusMm = (pocket.cutoutArc?.radius ?? 0) * 0.78
+    const sizeMm = pcolTableSpec.visuals.cornerBlockSize + 34
+    const outerCornerRadiusMm = 44
+    const lipRadiusMm = (pocket.cutoutArc?.radius ?? 0) * 0.70
+    const insetMm = 6
     const sx = Math.sign(pocket.mouthCenter.x) || 1
     const sy = Math.sign(pocket.mouthCenter.y) || 1
+    const ix = -sx
+    const iy = -sy
 
     const shape = new THREE.Shape()
-    shape.moveTo(mm(-sx * sizeMm), 0)
-    shape.lineTo(mm(-sx * sizeMm), mm(-sy * radiusMm))
+    shape.moveTo(0, mm(iy * sizeMm))
+    shape.lineTo(mm(ix * (sizeMm - outerCornerRadiusMm)), mm(iy * sizeMm))
     shape.quadraticCurveTo(
-      mm(-sx * sizeMm),
-      mm(-sy * sizeMm),
-      mm(-sx * radiusMm),
-      mm(-sy * sizeMm),
+      mm(ix * sizeMm),
+      mm(iy * sizeMm),
+      mm(ix * sizeMm),
+      mm(iy * (sizeMm - outerCornerRadiusMm)),
     )
-    shape.lineTo(0, mm(-sy * sizeMm))
+    shape.lineTo(mm(ix * sizeMm), 0)
     shape.lineTo(0, 0)
 
     const hole = new THREE.Path()
@@ -490,16 +648,17 @@ export class SnookerRenderer {
       : sx > 0 && sy < 0 ? Math.PI / 2
       : sx > 0 && sy > 0 ? Math.PI
       : Math.PI * 1.5
-    hole.absarc(0, 0, mm(innerRadiusMm), startAngle, startAngle + Math.PI / 2, false)
+    hole.moveTo(mm(ix * insetMm), mm(iy * lipRadiusMm))
+    hole.absarc(0, 0, mm(lipRadiusMm), startAngle, startAngle + Math.PI / 2, false)
     hole.lineTo(0, 0)
     shape.holes.push(hole)
 
     const geo = new THREE.ExtrudeGeometry(shape, {
       depth: height,
       bevelEnabled: true,
-      bevelThickness: mm(2.4),
-      bevelSize: mm(2),
-      bevelSegments: 3,
+      bevelThickness: mm(3.2),
+      bevelSize: mm(2.6),
+      bevelSegments: 4,
     })
     geo.rotateX(-Math.PI / 2)
 

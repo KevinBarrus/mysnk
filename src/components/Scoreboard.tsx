@@ -1,17 +1,16 @@
 import type { ReactNode } from 'react'
-
-type ScoreboardBall = 'red' | 'yellow' | 'green' | 'brown' | 'blue' | 'pink' | 'black'
+import type { BallOnIndicator } from '@/rules/SnookerRules'
 
 interface ScoreboardProps {
   playerName: string
   score: number
   breakScore: number
-  ballOn: ScoreboardBall
+  ballOn: BallOnIndicator
 }
 
 const SCOREBOARD_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
 
-const BALL_SWATCH: Record<ScoreboardBall, string> = {
+const BALL_SWATCH: Record<string, string> = {
   red: '#c81724',
   yellow: '#efc23b',
   green: '#136a3d',
@@ -20,6 +19,16 @@ const BALL_SWATCH: Record<ScoreboardBall, string> = {
   pink: '#d7839c',
   black: '#161616',
 }
+
+// Six colour segments for the "any colour" indicator (after potting a red)
+const COLOR_SEGMENTS = [
+  { color: '#efc23b', rotation: 0 },    // yellow
+  { color: '#136a3d', rotation: 60 },   // green
+  { color: '#6c3d1f', rotation: 120 },  // brown
+  { color: '#265fcb', rotation: 180 },  // blue
+  { color: '#d7839c', rotation: 240 },  // pink
+  { color: '#161616', rotation: 300 },  // black
+]
 
 function ScoreboardPanel({ children }: { children: ReactNode }) {
   return (
@@ -37,7 +46,36 @@ function ScoreboardPanel({ children }: { children: ReactNode }) {
   )
 }
 
-function BallIndicator({ ballOn }: { ballOn: ScoreboardBall }) {
+function BallIndicator({ ballOn }: { ballOn: BallOnIndicator }) {
+  if (ballOn === 'color') {
+    // Multi-colour pie: 6 equal segments, one per colour ball
+    const r = 12.5
+    const cx = 12.5
+    const cy = 12.5
+    const segments = COLOR_SEGMENTS.map(({ color, rotation }) => {
+      const startRad = (rotation - 90) * (Math.PI / 180)
+      const endRad = (rotation + 60 - 90) * (Math.PI / 180)
+      const x1 = cx + r * Math.cos(startRad)
+      const y1 = cy + r * Math.sin(startRad)
+      const x2 = cx + r * Math.cos(endRad)
+      const y2 = cy + r * Math.sin(endRad)
+      return (
+        <path
+          key={color}
+          d={`M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2} Z`}
+          fill={color}
+        />
+      )
+    })
+    return (
+      <div className="flex h-[27px] w-[27px] items-center justify-center rounded-full border border-white/95 bg-transparent overflow-hidden">
+        <svg width="25" height="25" viewBox="0 0 25 25" className="rounded-full overflow-hidden">
+          {segments}
+        </svg>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-[27px] w-[27px] items-center justify-center rounded-full border border-white/95 bg-transparent">
       <div
