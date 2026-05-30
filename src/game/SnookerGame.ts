@@ -1,4 +1,5 @@
 import { createOpeningBalls } from '@/game/ballLayout'
+import { type AiAbilityProfile, type AiTurnResolution, getAiAbilityProfile, resolveAiTurn } from '@/ai/match'
 import { PlanePhysics, type CueAddress, type ShotBlockReason } from '@/physics/PlanePhysics'
 import { SnookerRenderer } from '@/render/SnookerRenderer'
 import { SnookerRules, type FoulInfo, type RulesState, type ShotResult } from '@/rules/SnookerRules'
@@ -11,7 +12,7 @@ import type { Position2D } from '@/types/coords'
 
 const BAULK_Y = SPOTS.baulk.y
 
-export type GamePhase = 'general' | 'aiming' | 'simulating' | 'ballInHand' | 'ended'
+export type GamePhase = 'general' | 'aiming' | 'simulating' | 'aiResolving' | 'ballInHand' | 'ended'
 type CueStrokePhase = 'idle' | 'frontPause' | 'backswing' | 'forward' | 'followThroughHold' | 'postShot'
 
 interface CueStrokeState {
@@ -20,6 +21,16 @@ interface CueStrokeState {
   backswingDistance: number
   recoveryStartOffset: number
   strikePending: boolean
+}
+
+export interface AiTurnResolvedEvent {
+  actor: 'ai'
+  resolution: AiTurnResolution
+  scored: number
+  foul: FoulInfo | null
+  retainsTurn: boolean
+  turnChanged: boolean
+  afterState: RulesState
 }
 
 const FRONT_PAUSE_CUE_OFFSET_MM = 12
@@ -34,6 +45,7 @@ const FOLLOW_THROUGH_HOLD_DURATION = 0.18
 const POST_SHOT_PRESENTATION_DURATION = 1.05
 const FORWARD_CONTACT_CUE_OFFSET_MM = 0
 const STRIKE_CONTACT_OFFSET_MM = 4
+const AI_TURN_DELAY_MS = 1600
 
 export class SnookerGame {
   private physics = new PlanePhysics()
@@ -56,9 +68,11 @@ export class SnookerGame {
   private power = 0.35
   private readonly cueBallId = 'white'
   private mode: SummaryMode = 'practice'
+  private aiAbility: AiAbilityProfile = getAiAbilityProfile(null)
   private shotIndex = 0
   private currentShotSnapshot: TableSnapshot | null = null
   private shotSummaries: ShotSummary[] = []
+  private aiTurnDeadline = -1
 
   /** Set of currently-held key codes. */
   private keys = new Set<string>()
@@ -92,6 +106,7 @@ export class SnookerGame {
   private onScoreUpdate?: (state: RulesState) => void
   private onFoul?: (foul: FoulInfo | null) => void
   private onBallInHand?: () => void
+  private onAiTurnResolved?: (turn: AiTurnResolvedEvent) => void
   private onTableSnapshot?: (snapshot: TableSnapshot) => void
   private onShotSummary?: (summary: ShotSummary) => void
   private onSessionSummary?: (summary: SessionSummary) => void
@@ -110,6 +125,7 @@ export class SnookerGame {
     onScoreUpdate?: (state: RulesState) => void
     onFoul?: (foul: FoulInfo | null) => void
     onBallInHand?: () => void
+    onAiTurnResolved?: (turn: AiTurnResolvedEvent) => void
     onTableSnapshot?: (snapshot: TableSnapshot) => void
     onShotSummary?: (summary: ShotSummary) => void
     onSessionSummary?: (summary: SessionSummary) => void
@@ -120,6 +136,7 @@ export class SnookerGame {
     this.onScoreUpdate = cb.onScoreUpdate
     this.onFoul = cb.onFoul
     this.onBallInHand = cb.onBallInHand
+    this.onAiTurnResolved = cb.onAiTurnResolved
     this.onTableSnapshot = cb.onTableSnapshot
     this.onShotSummary = cb.onShotSummary
     this.onSessionSummary = cb.onSessionSummary
@@ -146,6 +163,10 @@ export class SnookerGame {
     this.restart()
   }
 
+  setAiAbility(profile: AiAbilityProfile): void {
+    this.aiAbility = profile
+  }
+
   private resetBalls(): void {
     for (const ball of createOpeningBalls()) {
       this.physics.addBall(ball.id, ball.color, ball.position)
@@ -163,7 +184,7 @@ export class SnookerGame {
   private bindInput(container: HTMLElement): void {
     // --- Drag: yaw/pitch in general, aim in aiming ---
     container.addEventListener('mousedown', (e) => {
-      if (!this.inputEnabled) return
+      if (!this.canAcceptPlayerInput()) return
       if (this.phase === 'ballInHand') {
         this.handleBallInHandClick(e.clientX, e.clientY)
         return
@@ -174,10 +195,13 @@ export class SnookerGame {
     })
 
     window.addEventListener('mousemove', (e) => {
+      if (!this.inputEnabled) return
       if (this.phase === 'ballInHand') {
+        if (!this.isHumanTurn()) return
         this.handleBallInHandMove(e.clientX, e.clientY)
         return
       }
+      if (!this.isHumanTurn()) return
       if (!this.isDragging) return
       const dx = e.clientX - this.dragLastX
       const dy = e.clientY - this.dragLastY
@@ -199,7 +223,7 @@ export class SnookerGame {
 
     // --- Scroll: power in aiming only ---
     window.addEventListener('wheel', (e) => {
-      if (!this.inputEnabled) return
+      if (!this.canAcceptPlayerInput()) return
       e.preventDefault()
       if (this.phase === 'aiming' && !this.isCueStrokeAnimating()) {
         this.power = Math.max(0.05, Math.min(1, this.power + (e.deltaY > 0 ? -0.05 : 0.05)))
@@ -208,7 +232,7 @@ export class SnookerGame {
 
     // --- Keyboard ---
     window.addEventListener('keydown', (e) => {
-      if (!this.inputEnabled) return
+      if (!this.canAcceptPlayerInput()) return
       this.keys.add(e.code)
 
       if (e.code === 'KeyW' && this.phase === 'general') {
@@ -246,6 +270,14 @@ export class SnookerGame {
       if (!this.inputEnabled) return
       this.keys.delete(e.code)
     })
+  }
+
+  private canAcceptPlayerInput(): boolean {
+    return this.inputEnabled && this.isHumanTurn()
+  }
+
+  private isHumanTurn(): boolean {
+    return this.mode !== 'match' || this.rules.getState().currentActor === 'player'
   }
 
   private isInDZone(pos: Position2D): boolean {
@@ -368,16 +400,7 @@ export class SnookerGame {
     this.onShotBlocked?.(null)
     if (this.isCueStrokeAnimating()) return
 
-    this.shotIndex += 1
-    this.currentShotSnapshot = buildTableSnapshot({
-      shotIndex: this.shotIndex,
-      mode: this.mode,
-      actor: this.rules.getState().currentActor,
-      rulesState: this.rules.getState(),
-      balls: this.physics.getAllBalls(),
-      getPosition: (id) => this.physics.getPosition(id),
-    })
-    this.onTableSnapshot?.(this.currentShotSnapshot)
+    this.beginShotSnapshot()
 
     this.cueStroke = {
       phase: 'backswing',
@@ -413,6 +436,7 @@ export class SnookerGame {
     this.shotPottedIds = []
     this.shotSettledFired = false
     this.postShotEndTime = -1
+    this.aiTurnDeadline = -1
     this.currentShotSnapshot = null
     this.shotSummaries = []
     this.shotIndex = 0
@@ -609,9 +633,130 @@ export class SnookerGame {
     return FRONT_PAUSE_CUE_OFFSET_MM
   }
 
-  private shouldEnterBallInHand(result: ShotResult): boolean {
+  private shouldEnterBallInHand(result: ShotResult, pottedBallIds: string[]): boolean {
     return result.foul?.type === 'whitePotted'
-      || this.shotPottedIds.includes(this.cueBallId)
+      || pottedBallIds.includes(this.cueBallId)
+  }
+
+  private beginShotSnapshot(): void {
+    this.shotIndex += 1
+    this.currentShotSnapshot = buildTableSnapshot({
+      shotIndex: this.shotIndex,
+      mode: this.mode,
+      actor: this.rules.getState().currentActor,
+      rulesState: this.rules.getState(),
+      balls: this.physics.getAllBalls(),
+      getPosition: (id) => this.physics.getPosition(id),
+    })
+    this.onTableSnapshot?.(this.currentShotSnapshot)
+  }
+
+  private applyResolvedPots(pottedBallIds: string[]): void {
+    for (const id of pottedBallIds) {
+      this.physics.potBall(id)
+    }
+  }
+
+  private scheduleAiTurn(now: number): void {
+    this.aiTurnDeadline = now + AI_TURN_DELAY_MS
+    this.setPhase('aiResolving')
+  }
+
+  private maybeRunAiTurn(now: number): void {
+    if (
+      this.mode !== 'match'
+      || this.rules.getState().currentActor !== 'ai'
+      || this.phase !== 'aiResolving'
+      || this.aiTurnDeadline < 0
+      || now < this.aiTurnDeadline
+    ) {
+      return
+    }
+
+    this.aiTurnDeadline = -1
+    this.runAiTurn()
+  }
+
+  private runAiTurn(): void {
+    this.beginShotSnapshot()
+    const rulesState = this.rules.getState()
+    const tableSnapshot = this.currentShotSnapshot ?? buildTableSnapshot({
+      shotIndex: this.shotIndex,
+      mode: this.mode,
+      actor: rulesState.currentActor,
+      rulesState,
+      balls: this.physics.getAllBalls(),
+      getPosition: (id) => this.physics.getPosition(id),
+    })
+    const resolution = resolveAiTurn({
+      rulesState,
+      tableSnapshot,
+      ability: this.aiAbility,
+    })
+
+    if (resolution.cueBallEndPosition) {
+      this.physics.respotBall(this.cueBallId, resolution.cueBallEndPosition)
+    }
+    this.applyResolvedPots(resolution.pottedBallIds)
+    this.finalizeResolvedShot(
+      resolution.firstContactBallId,
+      resolution.pottedBallIds,
+      performance.now(),
+      resolution,
+    )
+  }
+
+  private finalizeResolvedShot(
+    firstContact: string | null,
+    pottedBallIds: string[],
+    now: number,
+    aiResolution?: AiTurnResolution,
+  ): void {
+    const result = this.rules.processShot(firstContact, pottedBallIds, this.mode)
+    for (const id of result.respottedColorIds) {
+      this.physics.respotBall(id, SPOTS[id])
+    }
+    const afterState = this.rules.getState()
+    if (this.currentShotSnapshot) {
+      const shotSummary = buildShotSummary({
+        before: this.currentShotSnapshot,
+        firstContactBallId: firstContact,
+        pottedBallIds,
+        result,
+        afterState,
+        cueBallEndPosition: this.physics.getPosition(this.cueBallId),
+      })
+      this.shotSummaries.push(shotSummary)
+      this.onShotSummary?.(shotSummary)
+    }
+    this.onPotted?.(pottedBallIds)
+    this.onScoreUpdate?.(afterState)
+    this.onFoul?.(result.foul)
+    if (aiResolution) {
+      this.onAiTurnResolved?.({
+        actor: 'ai',
+        resolution: aiResolution,
+        scored: result.scored,
+        foul: result.foul,
+        retainsTurn: afterState.currentActor === 'ai' && !this.shouldEnterBallInHand(result, pottedBallIds),
+        turnChanged: result.turnChanged,
+        afterState,
+      })
+    }
+    this.currentShotSnapshot = null
+    this.pendingStandTarget = undefined
+
+    if (this.shouldEnterBallInHand(result, pottedBallIds)) {
+      this.enterBallInHand()
+      return
+    }
+
+    if (this.mode === 'match' && afterState.currentActor === 'ai') {
+      this.scheduleAiTurn(now)
+      return
+    }
+
+    this.setPhase('general')
   }
 
   private loop = (time: number): void => {
@@ -636,36 +781,10 @@ export class SnookerGame {
     ) {
       this.shotSettledFired = true
       this.postShotEndTime = -1
-      const firstContact = this.physics.getFirstContact()
-      const result = this.rules.processShot(firstContact, this.shotPottedIds, this.mode)
-      for (const id of result.respottedColorIds) {
-        this.physics.respotBall(id, SPOTS[id])
-      }
-      const afterState = this.rules.getState()
-      if (this.currentShotSnapshot) {
-        const shotSummary = buildShotSummary({
-          before: this.currentShotSnapshot,
-          firstContactBallId: firstContact,
-          pottedBallIds: this.shotPottedIds,
-          result,
-          afterState,
-          cueBallEndPosition: this.physics.getPosition(this.cueBallId),
-        })
-        this.shotSummaries.push(shotSummary)
-        this.onShotSummary?.(shotSummary)
-      }
-      this.onPotted?.(this.shotPottedIds)
-      this.onScoreUpdate?.(afterState)
-      this.onFoul?.(result.foul)
-      this.currentShotSnapshot = null
-      this.pendingStandTarget = undefined
-      // White potted → ball in hand
-      if (this.shouldEnterBallInHand(result)) {
-        this.enterBallInHand()
-      } else {
-        this.setPhase('general')
-      }
+      this.finalizeResolvedShot(this.physics.getFirstContact(), this.shotPottedIds, performance.now())
     }
+
+    this.maybeRunAiTurn(time)
 
     // General-mode keyboard orbit: A/D orbit around the table
     if (this.phase === 'general') {

@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { SnookerGame, type GamePhase } from '@/game/SnookerGame'
+import {
+  generateAiInnerMonologue,
+  getAiAbilityProfile,
+} from '@/ai'
+import {
+  getPracticeInstantFeedback,
+  streamPracticeReview,
+} from '@/ai/coach'
+import { SnookerGame, type AiTurnResolvedEvent, type GamePhase } from '@/game/SnookerGame'
 import { Scoreboard } from '@/components/Scoreboard'
 import {
   CAREER_RANKING,
@@ -71,6 +79,9 @@ export function GameCanvas() {
   const hostRef = useRef<HTMLDivElement>(null)
   const gameRef = useRef<SnookerGame | null>(null)
   const foulTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const aiTurnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const aiThoughtStreamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const aiThoughtRequestIdRef = useRef(0)
   const [view, setView] = useState<AppView>('guest')
   const [phase, setPhase] = useState<GamePhase>('general')
   const [showCareer, setShowCareer] = useState(false)
@@ -81,9 +92,20 @@ export function GameCanvas() {
   const [shotBlocked, setShotBlocked] = useState<string | null>(null)
   const [rulesState, setRulesState] = useState<RulesState>(INITIAL_RULES_STATE)
   const [foulInfo, setFoulInfo] = useState<FoulInfo | null>(null)
+  const [aiTurnMessage, setAiTurnMessage] = useState<string | null>(null)
+  const [latestAiTurn, setLatestAiTurn] = useState<AiTurnResolvedEvent | null>(null)
+  const [aiInnerThought, setAiInnerThought] = useState<string | null>(null)
+  const [aiInnerThoughtDisplay, setAiInnerThoughtDisplay] = useState<string>('')
   const [latestTableSnapshot, setLatestTableSnapshot] = useState<TableSnapshot | null>(null)
   const [latestShotSummary, setLatestShotSummary] = useState<ShotSummary | null>(null)
   const [latestSessionSummary, setLatestSessionSummary] = useState<SessionSummary | null>(null)
+  const [coachMessage, setCoachMessage] = useState<string | null>(null)
+  const [coachReview, setCoachReview] = useState<string | null>(null)
+  const [coachReviewDisplay, setCoachReviewDisplay] = useState('')
+  const [coachReviewSource, setCoachReviewSource] = useState<'llm' | 'template' | null>(null)
+  const [coachReviewFallbackReason, setCoachReviewFallbackReason] = useState<string | null>(null)
+  const [coachReviewChunkCount, setCoachReviewChunkCount] = useState(0)
+  const [isGeneratingCoachReview, setIsGeneratingCoachReview] = useState(false)
   const [debugPanel, setDebugPanel] = useState<'snapshot' | 'shot' | null>(null)
 
   useEffect(() => {
@@ -112,6 +134,9 @@ export function GameCanvas() {
           foulTimerRef.current = setTimeout(() => setFoulInfo(null), 3000)
         }
       },
+      onAiTurnResolved: (turn) => {
+        setLatestAiTurn(turn)
+      },
       onTableSnapshot: (snapshot) => {
         setLatestTableSnapshot(snapshot)
       },
@@ -131,6 +156,8 @@ export function GameCanvas() {
     return () => {
       clearInterval(interval)
       if (foulTimerRef.current) clearTimeout(foulTimerRef.current)
+      if (aiTurnTimerRef.current) clearTimeout(aiTurnTimerRef.current)
+      if (aiThoughtStreamTimerRef.current) clearInterval(aiThoughtStreamTimerRef.current)
       game.dispose()
       gameRef.current = null
     }
@@ -146,6 +173,16 @@ export function GameCanvas() {
     if (enableInput) {
       setShotBlocked(null)
       setLastPotted([])
+      setAiTurnMessage(null)
+      setLatestAiTurn(null)
+      setAiInnerThought(null)
+      setAiInnerThoughtDisplay('')
+      setCoachMessage(null)
+      setCoachReview(null)
+      setCoachReviewDisplay('')
+      setCoachReviewSource(null)
+      setCoachReviewFallbackReason(null)
+      setCoachReviewChunkCount(0)
       setPower(game.getPower())
       setPhase(game.getPhase())
       setDebugPanel(null)
@@ -160,10 +197,21 @@ export function GameCanvas() {
   }
 
   const handleBeatAi = (): void => {
+    gameRef.current?.setAiAbility(getAiAbilityProfile(NEXT_CHALLENGER))
     gameRef.current?.setMode('match')
     setShotBlocked(null)
     setLastPotted([])
     setFoulInfo(null)
+    setAiTurnMessage(null)
+    setLatestAiTurn(null)
+    setAiInnerThought(null)
+    setAiInnerThoughtDisplay('')
+    setCoachMessage(null)
+    setCoachReview(null)
+    setCoachReviewDisplay('')
+    setCoachReviewSource(null)
+    setCoachReviewFallbackReason(null)
+    setCoachReviewChunkCount(0)
     setRulesState(INITIAL_RULES_STATE)
     setShowCareer(false)
     setShowRanking(false)
@@ -176,6 +224,16 @@ export function GameCanvas() {
     setShotBlocked(null)
     setLastPotted([])
     setFoulInfo(null)
+    setAiTurnMessage(null)
+    setLatestAiTurn(null)
+    setAiInnerThought(null)
+    setAiInnerThoughtDisplay('')
+    setCoachMessage(null)
+    setCoachReview(null)
+    setCoachReviewDisplay('')
+    setCoachReviewSource(null)
+    setCoachReviewFallbackReason(null)
+    setCoachReviewChunkCount(0)
     setRulesState(INITIAL_RULES_STATE)
     setShowCareer(false)
     setShowRanking(false)
@@ -186,11 +244,156 @@ export function GameCanvas() {
   const showGameHud = view === 'practise' || view === 'beat-ai'
   const showAiHud = view === 'beat-ai' && NEXT_CHALLENGER !== null
   const aiChallenger = NEXT_CHALLENGER
+  const aiTableName = (aiChallenger?.displayName ?? 'AI').replace(/\s+/g, '')
+  const playerAtTable = rulesState.currentActor === 'player'
+  const playerBreakScore = playerAtTable ? rulesState.breakScore : 0
+  const aiBreakScore = rulesState.currentActor === 'ai' ? rulesState.breakScore : 0
+  const playerBallOn = playerAtTable ? rulesState.ballOn : null
+  const aiBallOn = rulesState.currentActor === 'ai' ? rulesState.ballOn : null
   const debugJson = debugPanel === 'snapshot'
     ? latestTableSnapshot
     : debugPanel === 'shot'
       ? latestShotSummary
       : null
+
+  useEffect(() => {
+    if (view !== 'practise') return
+    if (!latestShotSummary) return
+
+    const feedback = getPracticeInstantFeedback(latestShotSummary, 'strict')
+    setCoachMessage(feedback?.text ?? null)
+  }, [latestShotSummary, view])
+
+  useEffect(() => {
+    if (view !== 'beat-ai') return
+    if (!latestAiTurn || !aiChallenger) return
+
+    let message = `${aiTableName} missed`
+    if (latestAiTurn.foul) {
+      message = `${aiTableName} fouled`
+    } else if (latestAiTurn.scored > 0) {
+      message = `${aiTableName} ${latestAiTurn.resolution.text} (+${latestAiTurn.scored})`
+      if (latestAiTurn.retainsTurn) message += ' and stays on'
+    }
+
+    setAiTurnMessage(message)
+    if (aiTurnTimerRef.current) clearTimeout(aiTurnTimerRef.current)
+    aiTurnTimerRef.current = setTimeout(() => setAiTurnMessage(null), 1800)
+  }, [aiChallenger, aiTableName, latestAiTurn, view])
+
+  useEffect(() => {
+    if (view !== 'beat-ai' || phase !== 'aiResolving' || rulesState.currentActor !== 'ai' || !aiChallenger) {
+      setAiInnerThought(null)
+      setAiInnerThoughtDisplay('')
+      if (aiThoughtStreamTimerRef.current) {
+        clearInterval(aiThoughtStreamTimerRef.current)
+        aiThoughtStreamTimerRef.current = null
+      }
+      return
+    }
+
+    const requestId = ++aiThoughtRequestIdRef.current
+    setAiInnerThought(null)
+    setAiInnerThoughtDisplay('')
+
+    void generateAiInnerMonologue({
+      challenger: aiChallenger,
+      shot: latestShotSummary ?? undefined,
+      table: latestTableSnapshot ?? undefined,
+      session: latestSessionSummary ?? undefined,
+      recentShots: latestSessionSummary?.shots.slice(-3),
+    }).then((result) => {
+      if (aiThoughtRequestIdRef.current !== requestId) return
+      setAiInnerThought(result.text)
+    }).catch(() => {
+      if (aiThoughtRequestIdRef.current !== requestId) return
+      setAiInnerThought('先把这一杆做干净。')
+    })
+  }, [aiChallenger, latestSessionSummary, latestShotSummary, latestTableSnapshot, phase, rulesState.currentActor, view])
+
+  useEffect(() => {
+    if (aiThoughtStreamTimerRef.current) {
+      clearInterval(aiThoughtStreamTimerRef.current)
+      aiThoughtStreamTimerRef.current = null
+    }
+
+    if (!aiInnerThought) {
+      setAiInnerThoughtDisplay('')
+      return
+    }
+
+    let index = 0
+    setAiInnerThoughtDisplay('')
+    aiThoughtStreamTimerRef.current = setInterval(() => {
+      index += 1
+      setAiInnerThoughtDisplay(aiInnerThought.slice(0, index))
+      if (index >= aiInnerThought.length && aiThoughtStreamTimerRef.current) {
+        clearInterval(aiThoughtStreamTimerRef.current)
+        aiThoughtStreamTimerRef.current = null
+      }
+    }, 36)
+
+    return () => {
+      if (aiThoughtStreamTimerRef.current) {
+        clearInterval(aiThoughtStreamTimerRef.current)
+        aiThoughtStreamTimerRef.current = null
+      }
+    }
+  }, [aiInnerThought])
+
+  const handlePracticeReview = async (): Promise<void> => {
+    if (view !== 'practise' || !latestSessionSummary || isGeneratingCoachReview) return
+
+    setIsGeneratingCoachReview(true)
+    setCoachReview(null)
+    setCoachReviewDisplay('')
+    setCoachReviewSource('llm')
+    setCoachReviewFallbackReason(null)
+    setCoachReviewChunkCount(0)
+    console.log('[CoachReview] start', {
+      shotCount: latestSessionSummary.shotCount,
+      totalScore: latestSessionSummary.totalScore,
+    })
+    try {
+      const review = await streamPracticeReview(
+        latestSessionSummary,
+        {
+          onChunk: (_chunk, fullText) => {
+            setCoachReviewDisplay(fullText)
+            setCoachReviewChunkCount((current) => current + 1)
+          },
+          onDone: (result) => {
+            setCoachReviewSource(result.source)
+            setCoachReviewFallbackReason(result.fallbackReason ?? null)
+            console.log('[CoachReview] done', {
+              source: result.source,
+              fallbackReason: result.fallbackReason ?? null,
+            })
+          },
+          onError: (result) => {
+            setCoachReviewSource(result.source)
+            setCoachReviewDisplay(result.text)
+            setCoachReviewFallbackReason(result.fallbackReason ?? null)
+            console.log('[CoachReview] fallback', {
+              source: result.source,
+              fallbackReason: result.fallbackReason ?? null,
+            })
+          },
+        },
+        'strict',
+      )
+      setCoachReview(review.text)
+      setCoachReviewSource(review.source)
+      setCoachReviewDisplay(review.text)
+      setCoachReviewFallbackReason(review.fallbackReason ?? null)
+      console.log('[CoachReview] final', {
+        source: review.source,
+        fallbackReason: review.fallbackReason ?? null,
+      })
+    } finally {
+      setIsGeneratingCoachReview(false)
+    }
+  }
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-[#1a1510]">
@@ -361,8 +564,8 @@ export function GameCanvas() {
             <Scoreboard
               playerName={DEV_PLAYER_PROFILE.username}
               score={rulesState.playerScore}
-              breakScore={rulesState.breakScore}
-              ballOn={rulesState.ballOn}
+              breakScore={playerBreakScore}
+              ballOn={playerBallOn}
             />
           </div>
 
@@ -377,6 +580,9 @@ export function GameCanvas() {
               {view === 'beat-ai' && aiChallenger && (
                 <p className="text-amber-300">Challenger: #{aiChallenger.rank} {aiChallenger.displayName}</p>
               )}
+              {view === 'beat-ai' && (
+                <p className="text-white/70">At table: {rulesState.currentActor === 'ai' ? aiTableName : 'Player'}</p>
+              )}
               <p>Phase: {phase}</p>
               <p>Power: {Math.round(power * 100)}%</p>
               {lastPotted.length > 0 && (
@@ -390,9 +596,16 @@ export function GameCanvas() {
               <Scoreboard
                 playerName={aiChallenger!.displayName}
                 score={rulesState.aiScore}
-                breakScore={rulesState.currentActor === 'ai' ? rulesState.breakScore : 0}
-                ballOn={rulesState.ballOn}
+                breakScore={aiBreakScore}
+                ballOn={aiBallOn}
               />
+              <div className="mt-3 w-[536px] rounded bg-black/65 px-4 py-3 text-[13px] leading-6 text-[#f1ede4] shadow-[0_6px_18px_rgba(0,0,0,0.35)]">
+                <span className="font-semibold text-[#eda62a]">{aiTableName}:</span>
+                <span className="ml-2 whitespace-pre-wrap">{aiInnerThoughtDisplay}</span>
+                {phase === 'aiResolving' && aiInnerThoughtDisplay.length === 0 && (
+                  <span className="ml-2 text-white/55">...</span>
+                )}
+              </div>
             </div>
           )}
 
@@ -403,6 +616,24 @@ export function GameCanvas() {
           {shotBlocked && (
             <div className="pointer-events-none absolute left-1/2 top-20 -translate-x-1/2 rounded bg-black/70 px-4 py-2 text-sm font-semibold tracking-wide text-amber-300">
               {shotBlocked}
+            </div>
+          )}
+
+          {phase === 'aiResolving' && (
+            <div className="pointer-events-none absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded bg-black/75 px-4 py-2 text-sm font-semibold tracking-wide text-amber-200">
+              {aiTableName} at Table
+            </div>
+          )}
+
+          {aiTurnMessage && phase !== 'aiResolving' && (
+            <div className="pointer-events-none absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded bg-black/75 px-4 py-2 text-sm font-semibold tracking-wide text-amber-200">
+              {aiTurnMessage}
+            </div>
+          )}
+
+          {view === 'practise' && coachMessage && (
+            <div className="pointer-events-none absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded bg-black/75 px-4 py-2 text-sm font-semibold tracking-wide text-[#f1ede4]">
+              Coach: {coachMessage}
             </div>
           )}
 
@@ -443,6 +674,18 @@ export function GameCanvas() {
           )}
 
           <div className="absolute right-4 top-24 z-20 flex flex-col items-end gap-2">
+            {view === 'practise' && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handlePracticeReview()
+                }}
+                disabled={!latestSessionSummary || isGeneratingCoachReview}
+                className="rounded bg-[#d9b86d] px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-black hover:bg-[#ebca82] disabled:cursor-not-allowed disabled:bg-[#7c6d49] disabled:text-black/60"
+              >
+                {isGeneratingCoachReview ? 'Coach...' : 'Coach Review'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setDebugPanel((current) => current === 'snapshot' ? null : 'snapshot')}
@@ -470,6 +713,23 @@ export function GameCanvas() {
               <pre className="h-[calc(100%-49px)] overflow-auto px-4 py-3 text-[11px] leading-5 text-[#d9d3c6]">
                 {debugJson ? JSON.stringify(debugJson, null, 2) : 'No data yet.'}
               </pre>
+            </div>
+          )}
+
+          {view === 'practise' && (coachReview || isGeneratingCoachReview) && (
+            <div className="absolute right-4 top-40 z-20 w-[420px] rounded border border-[#d9b86d]/35 bg-[#0b0a08]/95 px-4 py-4 text-[#f1ede4] shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+              <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-[#d9b86d]">
+                <span>Coach Review</span>
+                <span>{coachReviewSource === 'llm' ? 'LLM' : 'Template'}</span>
+              </div>
+              <div className="mt-2 flex flex-col gap-1 text-[10px] uppercase tracking-[0.12em] text-[#9c9075]">
+                <span>Status: {isGeneratingCoachReview ? 'streaming' : 'done'}</span>
+                <span>Chunks: {coachReviewChunkCount}</span>
+                <span>Fallback: {coachReviewFallbackReason ?? 'none'}</span>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-[#ddd7ca]">
+                {coachReviewDisplay || coachReview || '...'}
+              </p>
             </div>
           )}
         </>

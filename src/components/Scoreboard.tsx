@@ -5,7 +5,7 @@ interface ScoreboardProps {
   playerName: string
   score: number
   breakScore: number
-  ballOn: BallOnIndicator
+  ballOn: BallOnIndicator | null
 }
 
 const SCOREBOARD_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
@@ -107,7 +107,7 @@ export function Scoreboard({ playerName, score, breakScore, ballOn }: Scoreboard
       </div>
 
       <div className="flex w-[54px] justify-center">
-        <BallIndicator ballOn={ballOn} />
+        {ballOn ? <BallIndicator ballOn={ballOn} /> : null}
       </div>
 
       <div className="flex w-[140px] items-baseline justify-start gap-[14px] pl-[18px] text-[#efebe1]">

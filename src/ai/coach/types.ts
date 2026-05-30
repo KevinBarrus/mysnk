@@ -55,3 +55,55 @@ export interface CoachRoutingPolicy {
 
 export type CoachShotSource = ShotSummary
 export type CoachSessionSource = SessionSummary
+
+export interface CoachFeedbackDecision {
+  scene: CoachScene
+  dimension: CoachDimension
+  sentiment: CoachSentiment
+  reasonTag: string
+  renderMode: CoachRenderMode
+}
+
+export interface CoachRenderedFeedback extends CoachFeedbackDecision {
+  persona: CoachPersona
+  text: string
+}
+
+export interface PracticeReviewShotDigest {
+  shotIndex: number
+  outcome: ShotSummary['outcome']
+  scoredPoints: number
+  foul: boolean
+  foulMessage: string | null
+  hitLegalFirstTarget: boolean
+  breakScoreAfterShot: number
+  cueBallPositionResult: ShotSummary['cueBallPositionResult']
+  nextShotChance: ShotSummary['nextShotChance']
+}
+
+export interface PracticeReviewInput {
+  mode: SessionSummary['mode']
+  shotCount: number
+  totalScore: number
+  highestBreak: number
+  foulCount: number
+  potCount: number
+  legalFirstHitCount: number
+  simplePotMissCount: number
+  goodCueBallPositionCount: number
+  nextChanceCreatedCount: number
+  recentShots: PracticeReviewShotDigest[]
+}
+
+export interface PracticeReviewResult {
+  text: string
+  source: 'llm' | 'template'
+  promptUsed?: string
+  fallbackReason?: string
+}
+
+export interface PracticeReviewStreamHandlers {
+  onChunk?: (chunk: string, fullText: string) => void
+  onDone?: (result: PracticeReviewResult) => void
+  onError?: (result: PracticeReviewResult) => void
+}

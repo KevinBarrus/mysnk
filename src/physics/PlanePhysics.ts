@@ -153,6 +153,18 @@ export class PlanePhysics {
     this.respotBall(id, position)
   }
 
+  potBall(id: string): void {
+    const ball = this.balls.get(id)
+    if (!ball || ball.potted) return
+
+    ball.potted = true
+    ball.body.velocity.setZero()
+    ball.body.angularVelocity.setZero()
+    ball.body.force.setZero()
+    ball.body.torque.setZero()
+    ball.body.position.y = -80
+  }
+
   respotBall(id: string, position: Position2D): void {
     const ball = this.balls.get(id)
     if (!ball) return

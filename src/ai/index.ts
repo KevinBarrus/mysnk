@@ -1,3 +1,6 @@
 export * from '@/ai/types'
 export * from '@/ai/personas'
 export * from '@/ai/challengeRoster'
+export * from '@/ai/match'
+export * from '@/ai/llm'
+export * from '@/ai/innerMonologue'
