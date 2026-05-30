@@ -2,6 +2,10 @@ import { createOpeningBalls } from '@/game/ballLayout'
 import { PlanePhysics, type CueAddress, type ShotBlockReason } from '@/physics/PlanePhysics'
 import { SnookerRenderer } from '@/render/SnookerRenderer'
 import { SnookerRules, type FoulInfo, type RulesState } from '@/rules/SnookerRules'
+import { buildSessionSummary } from '@/summary/buildSessionSummary'
+import { buildShotSummary } from '@/summary/buildShotSummary'
+import { buildTableSnapshot } from '@/summary/buildTableSnapshot'
+import type { SessionSummary, ShotActor, ShotSummary, SummaryMode, TableSnapshot } from '@/summary/types'
 import type { Position2D } from '@/types/coords'
 
 export type GamePhase = 'general' | 'aiming' | 'simulating' | 'ended'
@@ -40,12 +44,19 @@ export class SnookerGame {
   private shotPottedIds: string[] = []
   /** Prevents the settlement handler from firing more than once per shot. */
   private shotSettledFired = false
+  /** Timestamp when postShot ended, used for settlement timeout. */
+  private postShotEndTime = -1
 
   private phase: GamePhase = 'general'
   private aimAngle = 0
   private aimAngleDirty = true
   private power = 0.35
   private readonly cueBallId = 'white'
+  private readonly mode: SummaryMode = 'practice'
+  private readonly actor: ShotActor = 'player'
+  private shotIndex = 0
+  private currentShotSnapshot: TableSnapshot | null = null
+  private shotSummaries: ShotSummary[] = []
 
   /** Set of currently-held key codes. */
   private keys = new Set<string>()
@@ -78,6 +89,9 @@ export class SnookerGame {
   private onShotBlocked?: (message: string | null) => void
   private onScoreUpdate?: (state: RulesState) => void
   private onFoul?: (foul: FoulInfo | null) => void
+  private onTableSnapshot?: (snapshot: TableSnapshot) => void
+  private onShotSummary?: (summary: ShotSummary) => void
+  private onSessionSummary?: (summary: SessionSummary) => void
 
   constructor(container: HTMLElement) {
     this.renderer = new SnookerRenderer(container)
@@ -92,12 +106,18 @@ export class SnookerGame {
     onShotBlocked?: (message: string | null) => void
     onScoreUpdate?: (state: RulesState) => void
     onFoul?: (foul: FoulInfo | null) => void
+    onTableSnapshot?: (snapshot: TableSnapshot) => void
+    onShotSummary?: (summary: ShotSummary) => void
+    onSessionSummary?: (summary: SessionSummary) => void
   }): void {
     this.onPhaseChange = cb.onPhaseChange
     this.onPotted = cb.onPotted
     this.onShotBlocked = cb.onShotBlocked
     this.onScoreUpdate = cb.onScoreUpdate
     this.onFoul = cb.onFoul
+    this.onTableSnapshot = cb.onTableSnapshot
+    this.onShotSummary = cb.onShotSummary
+    this.onSessionSummary = cb.onSessionSummary
   }
 
   setInputEnabled(enabled: boolean): void {
@@ -289,6 +309,17 @@ export class SnookerGame {
     this.onShotBlocked?.(null)
     if (this.isCueStrokeAnimating()) return
 
+    this.shotIndex += 1
+    this.currentShotSnapshot = buildTableSnapshot({
+      shotIndex: this.shotIndex,
+      mode: this.mode,
+      actor: this.actor,
+      rulesState: this.rules.getState(),
+      balls: this.physics.getAllBalls(),
+      getPosition: (id) => this.physics.getPosition(id),
+    })
+    this.onTableSnapshot?.(this.currentShotSnapshot)
+
     this.cueStroke = {
       phase: 'backswing',
       elapsed: 0,
@@ -315,12 +346,17 @@ export class SnookerGame {
   }
 
   private restart(): void {
+    this.emitSessionSummary()
     this.physics = new PlanePhysics()
     this.renderer.clearAllBalls()
     this.resetBalls()
     this.rules.reset()
     this.shotPottedIds = []
     this.shotSettledFired = false
+    this.postShotEndTime = -1
+    this.currentShotSnapshot = null
+    this.shotSummaries = []
+    this.shotIndex = 0
     this.aimAngle = 0
     this.aimAngleDirty = true
     this.power = 0.35
@@ -439,6 +475,7 @@ export class SnookerGame {
         this.cueStroke.elapsed = 0
         this.shotPottedIds = []
         this.shotSettledFired = false
+        this.postShotEndTime = -1
         this.physics.strikeBall(this.cueBallId, this.aimDirection(), this.power)
         this.startShotSimulation()
         return
@@ -482,26 +519,8 @@ export class SnookerGame {
         this.postShotAimDir = null
         this.renderer.finishPostShotPresentation()
         if (this.phase === 'simulating') {
-          // Settle shot before returning to general
-          if (!this.shotSettledFired) {
-            this.shotSettledFired = true
-            const firstContact = this.physics.getFirstContact()
-            console.log('[SnookerGame] Shot settled (postShot end):', {
-              firstContact,
-              potted: this.shotPottedIds,
-            })
-            const result = this.rules.processShot(
-              firstContact,
-              this.shotPottedIds,
-              'practice',
-            )
-            console.log('[SnookerGame] Rules result:', result)
-            this.onPotted?.(this.shotPottedIds)
-            this.onScoreUpdate?.(this.rules.getState())
-            this.onFoul?.(result.foul)
-          }
-          this.setPhase('general')
-          this.pendingStandTarget = undefined
+          // Mark postShot end time; settlement fires in loop once balls sleep
+          this.postShotEndTime = performance.now()
         }
       }
     }
@@ -540,6 +559,40 @@ export class SnookerGame {
     if (!this.physics.allSleeping()) {
       const potted = this.physics.step(dt)
       if (potted.length) this.shotPottedIds.push(...potted)
+    }
+
+    // Wait for all balls to sleep after postShot ends, then settle.
+    // Timeout after 5s to guard against balls that never fully sleep.
+    const SETTLE_TIMEOUT_MS = 5000
+    if (
+      this.phase === 'simulating'
+      && this.postShotEndTime >= 0
+      && !this.shotSettledFired
+      && (this.physics.allSleeping() || performance.now() - this.postShotEndTime > SETTLE_TIMEOUT_MS)
+    ) {
+      this.shotSettledFired = true
+      this.postShotEndTime = -1
+      const firstContact = this.physics.getFirstContact()
+      const result = this.rules.processShot(firstContact, this.shotPottedIds, this.mode)
+      const afterState = this.rules.getState()
+      if (this.currentShotSnapshot) {
+        const shotSummary = buildShotSummary({
+          before: this.currentShotSnapshot,
+          firstContactBallId: firstContact,
+          pottedBallIds: this.shotPottedIds,
+          result,
+          afterState,
+          cueBallEndPosition: this.physics.getPosition(this.cueBallId),
+        })
+        this.shotSummaries.push(shotSummary)
+        this.onShotSummary?.(shotSummary)
+      }
+      this.onPotted?.(this.shotPottedIds)
+      this.onScoreUpdate?.(afterState)
+      this.onFoul?.(result.foul)
+      this.currentShotSnapshot = null
+      this.setPhase('general')
+      this.pendingStandTarget = undefined
     }
 
     // General-mode keyboard orbit: A/D orbit around the table
@@ -622,7 +675,13 @@ export class SnookerGame {
   }
 
   dispose(): void {
+    this.emitSessionSummary()
     cancelAnimationFrame(this.raf)
     this.renderer.dispose()
+  }
+
+  private emitSessionSummary(): void {
+    if (this.shotSummaries.length === 0) return
+    this.onSessionSummary?.(buildSessionSummary(this.mode, this.shotSummaries))
   }
 }

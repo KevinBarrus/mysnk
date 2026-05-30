@@ -2,8 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { SnookerGame, type GamePhase } from '@/game/SnookerGame'
 import { Scoreboard } from '@/components/Scoreboard'
 import type { FoulInfo, RulesState } from '@/rules/SnookerRules'
+import type { SessionSummary, ShotSummary, TableSnapshot } from '@/summary/types'
 
 type AppView = 'guest' | 'menu' | 'practise'
+
+const DEV_USER = {
+  username: 'admin',
+  prizeMoney: 1000,
+  worldRanking: 16,
+} as const
 
 const MENU_BUTTON_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
 const HUD_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
@@ -61,11 +68,17 @@ export function GameCanvas() {
   const foulTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [view, setView] = useState<AppView>('guest')
   const [phase, setPhase] = useState<GamePhase>('general')
+  const [showCareer, setShowCareer] = useState(false)
+  const [showMenuIdentity, setShowMenuIdentity] = useState(false)
   const [power, setPower] = useState(0.35)
   const [lastPotted, setLastPotted] = useState<string[]>([])
   const [shotBlocked, setShotBlocked] = useState<string | null>(null)
   const [rulesState, setRulesState] = useState<RulesState>(INITIAL_RULES_STATE)
   const [foulInfo, setFoulInfo] = useState<FoulInfo | null>(null)
+  const [latestTableSnapshot, setLatestTableSnapshot] = useState<TableSnapshot | null>(null)
+  const [latestShotSummary, setLatestShotSummary] = useState<ShotSummary | null>(null)
+  const [latestSessionSummary, setLatestSessionSummary] = useState<SessionSummary | null>(null)
+  const [debugPanel, setDebugPanel] = useState<'snapshot' | 'shot' | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
@@ -93,6 +106,16 @@ export function GameCanvas() {
           foulTimerRef.current = setTimeout(() => setFoulInfo(null), 3000)
         }
       },
+      onTableSnapshot: (snapshot) => {
+        setLatestTableSnapshot(snapshot)
+      },
+      onShotSummary: (summary) => {
+        setLatestShotSummary(summary)
+      },
+      onSessionSummary: (summary) => {
+        setLatestSessionSummary(summary)
+        console.log('[GameCanvas] Session summary:', summary)
+      },
     })
 
     const interval = setInterval(() => {
@@ -119,11 +142,19 @@ export function GameCanvas() {
       setLastPotted([])
       setPower(game.getPower())
       setPhase(game.getPhase())
+      setDebugPanel(null)
     }
   }, [view])
 
   const enterMenu = (): void => {
+    setShowCareer(false)
+    setShowMenuIdentity(true)
     setView('menu')
+  }
+
+  const handleBeatAi = (): void => {
+    setShowCareer(false)
+    setShowMenuIdentity(false)
   }
 
   const startPractise = (): void => {
@@ -131,10 +162,17 @@ export function GameCanvas() {
     setLastPotted([])
     setFoulInfo(null)
     setRulesState(INITIAL_RULES_STATE)
+    setShowCareer(false)
+    setShowMenuIdentity(false)
     setView('practise')
   }
 
   const showGameHud = view === 'practise'
+  const debugJson = debugPanel === 'snapshot'
+    ? latestTableSnapshot
+    : debugPanel === 'shot'
+      ? latestShotSummary
+      : null
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-[#1a1510]">
@@ -149,17 +187,60 @@ export function GameCanvas() {
             </>
           ) : (
             <>
-              <MenuButton label="Beat AI" onClick={() => undefined} />
+              <MenuButton label="Beat AI" onClick={handleBeatAi} />
               <MenuButton label="Practise" onClick={startPractise} />
+              <MenuButton label="Career" onClick={() => setShowCareer((current) => !current)} />
             </>
           )}
         </div>
       )}
 
-      {view === 'menu' && (
+      {view === 'menu' && showMenuIdentity && (
         <div className="pointer-events-none absolute right-6 top-5 z-20 flex items-center gap-6 text-sm uppercase tracking-[0.18em] text-[#f1ede4]">
-          <span>Guest Player</span>
-          <span className="text-[#d7b36a]">GBP 0</span>
+          <span>Player: {DEV_USER.username}</span>
+        </div>
+      )}
+
+      {view === 'menu' && showCareer && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/18">
+          <div className="relative min-w-[520px] bg-black px-10 py-8 text-[#f2f0ea] shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
+            <button
+              type="button"
+              onClick={() => setShowCareer(false)}
+              aria-label="Close career panel"
+              className="absolute right-4 top-3 text-[30px] leading-none text-[#f2f0ea] transition hover:text-[#d9b86d] focus:outline-none"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+              }}
+            >
+              ×
+            </button>
+            <p
+              className="text-[34px] leading-none font-semibold uppercase"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+                transform: 'scaleX(0.86)',
+                transformOrigin: 'left center',
+                letterSpacing: '-0.03em',
+              }}
+            >
+              My Prize Money: {DEV_USER.prizeMoney} £
+            </p>
+            <p
+              className="mt-5 text-[30px] leading-none font-semibold uppercase text-[#d9b86d]"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+                transform: 'scaleX(0.88)',
+                transformOrigin: 'left center',
+                letterSpacing: '-0.025em',
+              }}
+            >
+              World Ranking Now: {DEV_USER.worldRanking}
+            </p>
+          </div>
         </div>
       )}
 
@@ -167,7 +248,7 @@ export function GameCanvas() {
         <>
           <div className="pointer-events-none absolute left-[17px] top-[18px] z-10">
             <Scoreboard
-              playerName="PLAYER 1"
+              playerName={DEV_USER.username}
               score={rulesState.playerScore}
               breakScore={rulesState.breakScore}
               ballOn={rulesState.ballOn}
@@ -231,6 +312,37 @@ export function GameCanvas() {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          <div className="absolute right-4 top-24 z-20 flex flex-col items-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDebugPanel((current) => current === 'snapshot' ? null : 'snapshot')}
+              className="rounded bg-black/70 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-white/85 hover:bg-black/85"
+            >
+              TableSnapshot
+            </button>
+            <button
+              type="button"
+              onClick={() => setDebugPanel((current) => current === 'shot' ? null : 'shot')}
+              className="rounded bg-black/70 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-white/85 hover:bg-black/85"
+            >
+              ShotSummary
+            </button>
+          </div>
+
+          {debugPanel && (
+            <div className="absolute right-4 top-40 z-20 h-[520px] w-[420px] overflow-hidden rounded border border-white/10 bg-[#0b0a08]/95 shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-white/75">
+                <span>{debugPanel === 'snapshot' ? 'Latest TableSnapshot' : 'Latest ShotSummary'}</span>
+                {latestSessionSummary && (
+                  <span className="text-white/45">Session shots: {latestSessionSummary.shotCount}</span>
+                )}
+              </div>
+              <pre className="h-[calc(100%-49px)] overflow-auto px-4 py-3 text-[11px] leading-5 text-[#d9d3c6]">
+                {debugJson ? JSON.stringify(debugJson, null, 2) : 'No data yet.'}
+              </pre>
             </div>
           )}
         </>

@@ -28,7 +28,12 @@ const CUE_POST_SHOT_EXTRA_TIP_LIFT_MM = 26
 const CUE_ELEVATION_BUTT_LIFT_MM = 360
 const CUE_POST_SHOT_EXTRA_BUTT_LIFT_MM = 520
 const CUE_POST_SHOT_LOOK_LIFT_MM = 40
-
+const FRAME_OUTER_CORNER_RADIUS_MM = 130
+const FRAME_INNER_EDGE_OFFSET_MM = 18
+const FRAME_INNER_CORNER_SHOULDER_MM = 108
+const FRAME_INNER_CORNER_BULGE_MM = 62
+const FRAME_INNER_MIDDLE_HALF_MM = 72
+const FRAME_INNER_MIDDLE_BULGE_MM = 66
 function mm(v: number): number {
   return v * MM_TO_SCENE
 }
@@ -198,11 +203,8 @@ export class SnookerRenderer {
     const ch = mm(pcolTableRenderModel.cushions[0]?.height ?? pcolTableSpec.visuals.cushionHeight)
     const hw = mm(pcolTableRenderModel.playfield.width / 2)
     const hl = mm(pcolTableRenderModel.playfield.length / 2)
-    const pr = mm(pcolTableSpec.pockets[0]?.cutoutArc?.radius ?? 0)
     const ww = mm(pcolTableRenderModel.frame.railWidth)
 
-    const iw = hw + cw
-    const il = hl + cw
     const ow = hw + cw + ww
     const ol = hl + cw + ww
 
@@ -211,11 +213,13 @@ export class SnookerRenderer {
       roughness: 1,
       metalness: 0,
     })
+    const feltOverlap = mm(26)
     const felt = new THREE.Mesh(
-      new THREE.PlaneGeometry(hw * 2, hl * 2),
+      new THREE.PlaneGeometry(hw * 2 + feltOverlap * 2, hl * 2 + feltOverlap * 2),
       feltMat,
     )
     felt.rotation.x = -Math.PI / 2
+    felt.position.y = 0.001
     felt.receiveShadow = true
     this.tableGroup.add(felt)
 
@@ -244,39 +248,14 @@ export class SnookerRenderer {
       }
     }
 
-    this.buildCornerCushionFillers(ch, cushionMat, trimMat, trimW, trimH)
-
     const woodMat = new THREE.MeshStandardMaterial({
       color: pcolTableRenderModel.frame.woodColor,
       roughness: 0.3,
       metalness: 0.08,
     })
 
-    // Outer boundary (CCW for Three.js Shape)
-    const shape = new THREE.Shape()
-    shape.moveTo(-ow, -ol)
-    shape.lineTo(ow, -ol)
-    shape.lineTo(ow, ol)
-    shape.lineTo(-ow, ol)
-    shape.closePath()
-
-    // Inner hole with pocket arc cutouts (CW)
-    const hole = new THREE.Path()
-    hole.moveTo(iw, -il + pr)                      // right edge, above bottom corner
-    hole.lineTo(iw, -pr)                           // right edge DOWN to middle pocket
-    hole.quadraticCurveTo(iw + pr, 0, iw, pr)     // right middle pocket
-    hole.lineTo(iw, il - pr)                       // right edge UP to top corner
-    hole.quadraticCurveTo(iw + pr, il + pr, iw - pr, il)  // top-right corner pocket
-    hole.lineTo(-iw + pr, il)                      // top edge LEFT
-    hole.quadraticCurveTo(-iw - pr, il + pr, -iw, il - pr)  // top-left corner pocket
-    hole.lineTo(-iw, pr)                           // left edge DOWN to middle pocket
-    hole.quadraticCurveTo(-iw - pr, 0, -iw, -pr)  // left middle pocket
-    hole.lineTo(-iw, -il + pr)                     // left edge DOWN to bottom corner
-    hole.quadraticCurveTo(-iw - pr, -il - pr, -iw + pr, -il)  // bottom-left corner pocket
-    hole.lineTo(iw - pr, -il)                      // bottom edge RIGHT
-    hole.quadraticCurveTo(iw + pr, -il - pr, iw, -il + pr)  // bottom-right corner pocket
-
-    shape.holes.push(hole)
+    const shape = this.buildRoundedRectShape(ow, ol, mm(FRAME_OUTER_CORNER_RADIUS_MM))
+    shape.holes.push(this.buildFrameInnerHolePath())
 
     const frameGeo = new THREE.ExtrudeGeometry(shape, {
       depth: mm(pcolTableRenderModel.frame.railDepth),
@@ -330,84 +309,110 @@ export class SnookerRenderer {
     this.scene.add(this.tableGroup)
   }
 
-  private buildCornerCushionFillers(
-    cushionHeight: number,
-    cushionMat: THREE.Material,
-    trimMat: THREE.Material,
-    trimWidth: number,
-    trimHeight: number,
-  ): void {
-    const halfW = pcolTableRenderModel.playfield.width / 2
-    const halfL = pcolTableRenderModel.playfield.length / 2
-    const innerRadius = 18
-    const outerRadius = CUSHION_WIDTH
-
-    for (const sx of [-1, 1] as const) {
-      for (const sy of [-1, 1] as const) {
-        const centerX = sx * (halfW - innerRadius)
-        const centerY = sy * (halfL - innerRadius)
-        const body = this.createCornerCushionArcMesh(
-          centerX,
-          centerY,
-          sx,
-          sy,
-          innerRadius,
-          outerRadius,
-          cushionHeight,
-          cushionMat,
-        )
-        body.castShadow = true
-        body.receiveShadow = true
-        this.tableGroup.add(body)
-
-        const trim = this.createCornerCushionArcMesh(
-          centerX,
-          centerY,
-          sx,
-          sy,
-          outerRadius - trimWidth / MM_TO_SCENE,
-          outerRadius,
-          trimHeight,
-          trimMat,
-        )
-        trim.position.y = cushionHeight
-        trim.castShadow = true
-        this.tableGroup.add(trim)
-      }
-    }
+  private buildRoundedRectShape(halfW: number, halfL: number, radius: number): THREE.Shape {
+    const shape = new THREE.Shape()
+    this.traceRoundedRect(shape, halfW, halfL, radius)
+    return shape
   }
 
-  private createCornerCushionArcMesh(
-    centerXmm: number,
-    centerYmm: number,
-    sx: -1 | 1,
-    sy: -1 | 1,
-    innerRadiusMm: number,
-    outerRadiusMm: number,
-    height: number,
-    material: THREE.Material,
-  ): THREE.Mesh {
-    const shape = new THREE.Shape()
-    const startAngle = sx < 0 && sy < 0 ? Math.PI
-      : sx > 0 && sy < 0 ? Math.PI * 1.5
-      : sx > 0 && sy > 0 ? 0
-      : Math.PI / 2
-    const endAngle = startAngle + Math.PI / 2
+  private traceRoundedRect(path: THREE.Path | THREE.Shape, halfW: number, halfL: number, radius: number): void {
+    const r = Math.max(0, Math.min(radius, halfW, halfL))
+    path.moveTo(-halfW + r, -halfL)
+    path.lineTo(halfW - r, -halfL)
+    path.absarc(halfW - r, -halfL + r, r, -Math.PI / 2, 0, false)
+    path.lineTo(halfW, halfL - r)
+    path.absarc(halfW - r, halfL - r, r, 0, Math.PI / 2, false)
+    path.lineTo(-halfW + r, halfL)
+    path.absarc(-halfW + r, halfL - r, r, Math.PI / 2, Math.PI, false)
+    path.lineTo(-halfW, -halfL + r)
+    path.absarc(-halfW + r, -halfL + r, r, Math.PI, Math.PI * 1.5, false)
+    path.closePath()
+  }
 
-    shape.absarc(mm(centerXmm), mm(centerYmm), mm(outerRadiusMm), startAngle, endAngle, false)
+  private buildFrameInnerHolePath(): THREE.Path {
+    const hw = pcolTableRenderModel.playfield.width / 2
+    const hl = pcolTableRenderModel.playfield.length / 2
+    const edgeX = hw + CUSHION_WIDTH + FRAME_INNER_EDGE_OFFSET_MM
+    const edgeY = hl + CUSHION_WIDTH + FRAME_INNER_EDGE_OFFSET_MM
+    const cornerShoulder = FRAME_INNER_CORNER_SHOULDER_MM
+    const cornerBulge = FRAME_INNER_CORNER_BULGE_MM
+    const middleHalf = FRAME_INNER_MIDDLE_HALF_MM
+    const middleBulge = FRAME_INNER_MIDDLE_BULGE_MM
+    const path = new THREE.Path()
 
-    const hole = new THREE.Path()
-    hole.absarc(mm(centerXmm), mm(centerYmm), mm(innerRadiusMm), endAngle, startAngle, true)
-    shape.holes.push(hole)
-
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      depth: height,
-      bevelEnabled: false,
-    })
-    geo.rotateX(-Math.PI / 2)
-    const mesh = new THREE.Mesh(geo, material)
-    mesh.position.y = height
-    return mesh
+    path.moveTo(mm(hw - cornerShoulder), mm(-edgeY))
+    path.lineTo(mm(-hw + cornerShoulder), mm(-edgeY))
+    path.bezierCurveTo(
+      mm(-hw - cornerBulge * 0.25),
+      mm(-edgeY),
+      mm(-edgeX),
+      mm(-hl - cornerBulge * 0.25),
+      mm(-edgeX),
+      mm(-hl + cornerShoulder),
+    )
+    path.lineTo(mm(-edgeX), mm(-middleHalf))
+    path.bezierCurveTo(
+      mm(-edgeX),
+      mm(-middleHalf * 0.6),
+      mm(-hw - middleBulge),
+      mm(-middleHalf * 0.42),
+      mm(-hw - middleBulge),
+      0,
+    )
+    path.bezierCurveTo(
+      mm(-hw - middleBulge),
+      mm(middleHalf * 0.42),
+      mm(-edgeX),
+      mm(middleHalf * 0.6),
+      mm(-edgeX),
+      mm(middleHalf),
+    )
+    path.lineTo(mm(-edgeX), mm(hl - cornerShoulder))
+    path.bezierCurveTo(
+      mm(-edgeX),
+      mm(hl + cornerBulge * 0.25),
+      mm(-hw - cornerBulge * 0.25),
+      mm(edgeY),
+      mm(-hw + cornerShoulder),
+      mm(edgeY),
+    )
+    path.lineTo(mm(hw - cornerShoulder), mm(edgeY))
+    path.bezierCurveTo(
+      mm(hw + cornerBulge * 0.25),
+      mm(edgeY),
+      mm(edgeX),
+      mm(hl + cornerBulge * 0.25),
+      mm(edgeX),
+      mm(hl - cornerShoulder),
+    )
+    path.lineTo(mm(edgeX), mm(middleHalf))
+    path.bezierCurveTo(
+      mm(edgeX),
+      mm(middleHalf * 0.6),
+      mm(hw + middleBulge),
+      mm(middleHalf * 0.42),
+      mm(hw + middleBulge),
+      0,
+    )
+    path.bezierCurveTo(
+      mm(hw + middleBulge),
+      mm(-middleHalf * 0.42),
+      mm(edgeX),
+      mm(-middleHalf * 0.6),
+      mm(edgeX),
+      mm(-middleHalf),
+    )
+    path.lineTo(mm(edgeX), mm(-hl + cornerShoulder))
+    path.bezierCurveTo(
+      mm(edgeX),
+      mm(-hl - cornerBulge * 0.25),
+      mm(hw + cornerBulge * 0.25),
+      mm(-edgeY),
+      mm(hw - cornerShoulder),
+      mm(-edgeY),
+    )
+    path.closePath()
+    return path
   }
 
   private createCushionBodyMesh(
@@ -417,9 +422,7 @@ export class SnookerRenderer {
     height: number,
     material: THREE.Material,
   ): THREE.Mesh {
-    const taperStartMm = this.getCushionTaperMm(side, segment.start)
-    const taperEndMm = this.getCushionTaperMm(side, segment.end)
-    const shape = this.buildCushionProfileShape(side, segment, visibleWidthMm, taperStartMm, taperEndMm)
+    const shape = this.buildCushionProfileShape(side, segment, visibleWidthMm, 0, 0)
     const geo = new THREE.ExtrudeGeometry(shape, {
       depth: height,
       bevelEnabled: true,
@@ -443,14 +446,12 @@ export class SnookerRenderer {
     material: THREE.Material,
   ): THREE.Mesh {
     const inset = (visibleWidthMm - trimWidth / MM_TO_SCENE) / 2
-    const taperStartMm = Math.max(0, this.getCushionTaperMm(side, segment.start) - inset)
-    const taperEndMm = Math.max(0, this.getCushionTaperMm(side, segment.end) - inset)
     const shape = this.buildCushionProfileShape(
       side,
       segment,
       trimWidth / MM_TO_SCENE,
-      taperStartMm,
-      taperEndMm,
+      0,
+      0,
     )
     const geo = new THREE.ExtrudeGeometry(shape, {
       depth: trimHeight,
@@ -498,23 +499,8 @@ export class SnookerRenderer {
     return shape
   }
 
-  private getCushionTaperMm(side: 'top' | 'bottom' | 'left' | 'right', point: Position2D): number {
-    if (side === 'top' || side === 'bottom') {
-      if (Math.abs(point.x) > pcolTableRenderModel.playfield.width / 2 - 120) return 42
-      return 0
-    }
-
-    if (Math.abs(point.y) < 80) return 34
-    if (Math.abs(point.y) > pcolTableRenderModel.playfield.length / 2 - 120) return 42
-    return 0
-  }
-
   private buildPockets(): void {
     const voidMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketInteriorColor, roughness: 1, metalness: 0 })
-    const rimMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketRimColor, roughness: 0.85, metalness: 0 })
-    const feltMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.clothColor, roughness: 1, metalness: 0 })
-
-    this.buildPocketCaps(rimMat)
 
     const cw = mm(CUSHION_WIDTH)
     const hw = mm(pcolTableRenderModel.playfield.width / 2)
@@ -526,7 +512,6 @@ export class SnookerRenderer {
       const pos = tableVec(pocket.mouthCenter)
       const isMiddle = pocket.kind === 'middle'
       const pr = mm(pocket.cutoutArc?.radius ?? 0)
-      const arcPoints = this.getPocketArcPoints(pocket, iw, il, pr, 14)
 
       if (isMiddle) {
         const shape = new THREE.Shape()
@@ -550,200 +535,7 @@ export class SnookerRenderer {
         mesh.position.set(pos.x, -mm(16), pos.z)
         this.tableGroup.add(mesh)
       }
-
-      if (arcPoints.length < 2) continue
-
-      const rimDepth = mm(isMiddle ? 20 : 24)
-      const rimOffset = pr * (isMiddle ? 0.42 : 0.30)
-      const rimMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, rimDepth, rimOffset, rimMat)
-      rimMesh.position.y = -mm(isMiddle ? 1 : 3)
-      this.tableGroup.add(rimMesh)
-
-      const feltDepth = mm(12)
-      const feltOffset = pr * (isMiddle ? 0.24 : 0.18)
-      const feltMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, feltDepth, feltOffset, feltMat)
-      this.tableGroup.add(feltMesh)
     }
-  }
-
-  private buildPocketCaps(material: THREE.Material): void {
-    const blockH = mm(pcolTableSpec.visuals.pocketBlockHeight)
-
-    for (const pocket of pcolTableSpec.pockets) {
-      const cap = pocket.kind === 'middle'
-        ? this.createMiddlePocketCap(pocket, blockH, material)
-        : this.createCornerPocketCap(pocket, blockH, material)
-      cap.castShadow = true
-      cap.receiveShadow = true
-      this.tableGroup.add(cap)
-    }
-  }
-
-  private createMiddlePocketCap(
-    pocket: (typeof pcolTableSpec.pockets)[number],
-    height: number,
-    material: THREE.Material,
-  ): THREE.Mesh {
-    const depthMm = pcolTableSpec.visuals.middleBlockDepth + 26
-    const outerRadiusMm = pocket.mouthWidth / 2 + 28
-    const innerRadiusMm = pocket.mouthWidth / 2 - 6
-    const bodyHalfMm = 32
-    const outward = Math.sign(pocket.mouthCenter.x) || 1
-
-    const shape = new THREE.Shape()
-    shape.moveTo(0, mm(bodyHalfMm))
-    shape.lineTo(mm(outward * depthMm), mm(bodyHalfMm))
-    shape.lineTo(mm(outward * depthMm), mm(-bodyHalfMm))
-    shape.lineTo(0, mm(-bodyHalfMm))
-    shape.absarc(0, 0, mm(outerRadiusMm), -Math.PI / 2, Math.PI / 2, outward > 0)
-
-    const hole = new THREE.Path()
-    hole.moveTo(0, mm(-innerRadiusMm))
-    hole.absarc(0, 0, mm(innerRadiusMm), -Math.PI / 2, Math.PI / 2, outward < 0)
-    hole.lineTo(0, mm(-innerRadiusMm))
-    shape.holes.push(hole)
-
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      depth: height,
-      bevelEnabled: true,
-      bevelThickness: mm(2.2),
-      bevelSize: mm(1.8),
-      bevelSegments: 3,
-    })
-    geo.rotateX(-Math.PI / 2)
-
-    const mesh = new THREE.Mesh(geo, material)
-    mesh.position.set(mm(pocket.mouthCenter.x), height, mm(pocket.mouthCenter.y))
-    return mesh
-  }
-
-  private createCornerPocketCap(
-    pocket: (typeof pcolTableSpec.pockets)[number],
-    height: number,
-    material: THREE.Material,
-  ): THREE.Mesh {
-    const sizeMm = pcolTableSpec.visuals.cornerBlockSize + 34
-    const outerCornerRadiusMm = 44
-    const lipRadiusMm = (pocket.cutoutArc?.radius ?? 0) * 0.70
-    const insetMm = 6
-    const sx = Math.sign(pocket.mouthCenter.x) || 1
-    const sy = Math.sign(pocket.mouthCenter.y) || 1
-    const ix = -sx
-    const iy = -sy
-
-    const shape = new THREE.Shape()
-    shape.moveTo(0, mm(iy * sizeMm))
-    shape.lineTo(mm(ix * (sizeMm - outerCornerRadiusMm)), mm(iy * sizeMm))
-    shape.quadraticCurveTo(
-      mm(ix * sizeMm),
-      mm(iy * sizeMm),
-      mm(ix * sizeMm),
-      mm(iy * (sizeMm - outerCornerRadiusMm)),
-    )
-    shape.lineTo(mm(ix * sizeMm), 0)
-    shape.lineTo(0, 0)
-
-    const hole = new THREE.Path()
-    const startAngle = sx < 0 && sy < 0 ? 0
-      : sx > 0 && sy < 0 ? Math.PI / 2
-      : sx > 0 && sy > 0 ? Math.PI
-      : Math.PI * 1.5
-    hole.moveTo(mm(ix * insetMm), mm(iy * lipRadiusMm))
-    hole.absarc(0, 0, mm(lipRadiusMm), startAngle, startAngle + Math.PI / 2, false)
-    hole.lineTo(0, 0)
-    shape.holes.push(hole)
-
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      depth: height,
-      bevelEnabled: true,
-      bevelThickness: mm(3.2),
-      bevelSize: mm(2.6),
-      bevelSegments: 4,
-    })
-    geo.rotateX(-Math.PI / 2)
-
-    const mesh = new THREE.Mesh(geo, material)
-    mesh.position.set(mm(pocket.mouthCenter.x), height, mm(pocket.mouthCenter.y))
-    return mesh
-  }
-
-  private getPocketArcPoints(
-    pocket: (typeof pcolTableSpec.pockets)[number], iw: number, il: number, pr: number, segs: number,
-  ): THREE.Vector3[] {
-    if (pocket.kind === 'middle') {
-      const side = Math.sign(pocket.mouthCenter.x)
-      const p0 = new THREE.Vector3(side * iw, 0, -pr)
-      const p1 = new THREE.Vector3(side * (iw + pr), 0, 0)
-      const p2 = new THREE.Vector3(side * iw, 0, pr)
-      return new THREE.QuadraticBezierCurve3(p0, p1, p2).getPoints(segs)
-    }
-
-    const sx = Math.sign(pocket.mouthCenter.x)
-    const sz = Math.sign(pocket.mouthCenter.y)
-    let p0: THREE.Vector3, p1: THREE.Vector3, p2: THREE.Vector3
-    if (sx < 0 && sz < 0) {
-      p0 = new THREE.Vector3(-iw, 0, -il + pr)
-      p1 = new THREE.Vector3(-iw - pr, 0, -il - pr)
-      p2 = new THREE.Vector3(-iw + pr, 0, -il)
-    } else if (sx > 0 && sz < 0) {
-      p0 = new THREE.Vector3(iw - pr, 0, -il)
-      p1 = new THREE.Vector3(iw + pr, 0, -il - pr)
-      p2 = new THREE.Vector3(iw, 0, -il + pr)
-    } else if (sx > 0 && sz > 0) {
-      p0 = new THREE.Vector3(iw, 0, il - pr)
-      p1 = new THREE.Vector3(iw + pr, 0, il + pr)
-      p2 = new THREE.Vector3(iw - pr, 0, il)
-    } else {
-      p0 = new THREE.Vector3(-iw + pr, 0, il)
-      p1 = new THREE.Vector3(-iw - pr, 0, il + pr)
-      p2 = new THREE.Vector3(-iw, 0, il - pr)
-    }
-    return new THREE.QuadraticBezierCurve3(p0, p1, p2).getPoints(segs)
-  }
-
-  private createPocketWrap(
-    arcPoints: THREE.Vector3[],
-    pocket: Position2D,
-    depth: number,
-    outwardOffset: number,
-    material: THREE.Material,
-  ): THREE.Mesh {
-    const n = arcPoints.length
-    const verts: number[] = []
-    const idx: number[] = []
-
-    for (let i = 0; i < n; i++) {
-      const p = arcPoints[i]
-      const dir = this.pocketOutwardDir(pocket)
-
-      verts.push(p.x, 0, p.z)
-      verts.push(p.x + dir.x * outwardOffset, -depth, p.z + dir.z * outwardOffset)
-    }
-
-    for (let i = 0; i < n - 1; i++) {
-      const a = i * 2
-      const b = i * 2 + 1
-      const c = (i + 1) * 2
-      const d = (i + 1) * 2 + 1
-      idx.push(a, c, b, b, c, d)
-    }
-
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3))
-    geo.setIndex(idx)
-    geo.computeVertexNormals()
-    return new THREE.Mesh(geo, material)
-  }
-
-  private pocketOutwardDir(pocket: Position2D): THREE.Vector3 {
-    if (pocket.y === 0) {
-      // Middle pocket: perpendicular to the long side
-      return new THREE.Vector3(Math.sign(pocket.x), 0, 0)
-    }
-    // Corner pocket: diagonal away from table
-    const sx = Math.sign(pocket.x)
-    const sz = Math.sign(pocket.y)
-    return new THREE.Vector3(sx, 0, sz).normalize()
   }
 
   private buildCue(): THREE.Group {
