@@ -19,7 +19,7 @@ const CUE_VISIBLE_LENGTH_MM =
   CUE_TIP_LENGTH_MM + CUE_FERRULE_LENGTH_MM + CUE_FRONT_SHAFT_LENGTH_MM + CUE_BUTT_LENGTH_MM
 const CUE_TIP_TO_GROUP_ORIGIN_MM = CUE_VISIBLE_LENGTH_MM - CUE_TIP_LENGTH_MM / 2
 const CUE_TIP_LOOKAHEAD_MM = 36
-const AIM_CAMERA_BEHIND_DIST_MM = 940
+const AIM_CAMERA_BEHIND_DIST_MM = 600
 const AIM_CAMERA_EYE_HEIGHT_MM = 185
 const AIM_CAMERA_LOOKAHEAD_MM = 600
 const CUE_BASE_TIP_LIFT_MM = 14
@@ -359,32 +359,7 @@ export class SnookerRenderer {
     const rimMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketRimColor, roughness: 0.85, metalness: 0 })
     const feltMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.clothColor, roughness: 1, metalness: 0 })
 
-    // Above-table pocket blocks (matte black surround visible at rail level)
-    const blockMat = new THREE.MeshStandardMaterial({ color: pcolTableSpec.visuals.pocketRimColor, roughness: 0.9, metalness: 0 })
-    const blockH = mm(pcolTableSpec.visuals.pocketBlockHeight)
-    for (const pocket of pcolTableSpec.pockets) {
-      const mc = pocket.mouthCenter
-      if (pocket.kind === 'middle') {
-        const outSign = Math.sign(mc.x)
-        const d = pcolTableSpec.visuals.middleBlockDepth
-        const geo = new THREE.BoxGeometry(mm(d), blockH, mm(pocket.mouthWidth))
-        const blockMesh = new THREE.Mesh(geo, blockMat)
-        blockMesh.position.set(mm(mc.x + outSign * d / 2), blockH / 2, mm(mc.y))
-        blockMesh.castShadow = true
-        blockMesh.receiveShadow = true
-        this.tableGroup.add(blockMesh)
-      } else {
-        const sz = pcolTableSpec.visuals.cornerBlockSize
-        const sx = Math.sign(mc.x)
-        const sy = Math.sign(mc.y)
-        const geo = new THREE.BoxGeometry(mm(sz), blockH, mm(sz))
-        const blockMesh = new THREE.Mesh(geo, blockMat)
-        blockMesh.position.set(mm(mc.x + sx * sz / 2), blockH / 2, mm(mc.y + sy * sz / 2))
-        blockMesh.castShadow = true
-        blockMesh.receiveShadow = true
-        this.tableGroup.add(blockMesh)
-      }
-    }
+    this.buildPocketCaps(rimMat)
 
     const cw = mm(CUSHION_WIDTH)
     const hw = mm(pcolTableRenderModel.playfield.width / 2)
@@ -402,38 +377,135 @@ export class SnookerRenderer {
         const shape = new THREE.Shape()
         shape.moveTo(0, 0)
         if (pocket.mouthCenter.x < 0) {
-          shape.absarc(0, 0, pr * 1.1, -Math.PI / 2, Math.PI / 2, true)
+          shape.absarc(0, 0, pr * 1.18, -Math.PI / 2, Math.PI / 2, true)
         } else {
-          shape.absarc(0, 0, pr * 1.1, Math.PI / 2, -Math.PI / 2, true)
+          shape.absarc(0, 0, pr * 1.18, Math.PI / 2, -Math.PI / 2, true)
         }
         shape.lineTo(0, 0)
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: mm(35), bevelEnabled: false })
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: mm(52), bevelEnabled: false })
         geo.rotateX(-Math.PI / 2)
         const mesh = new THREE.Mesh(geo, voidMat)
-        mesh.position.set(pos.x, -mm(5), pos.z)
+        mesh.position.set(pos.x, -mm(7), pos.z)
         this.tableGroup.add(mesh)
       } else {
         const mesh = new THREE.Mesh(
-          new THREE.CylinderGeometry(pr * 0.9, pr * 1.15, mm(32), 22),
+          new THREE.CylinderGeometry(pr * 0.92, pr * 1.22, mm(46), 28),
           voidMat,
         )
-        mesh.position.set(pos.x, -mm(12), pos.z)
+        mesh.position.set(pos.x, -mm(16), pos.z)
         this.tableGroup.add(mesh)
       }
 
       if (arcPoints.length < 2) continue
 
-      const rimDepth = mm(14)
-      const rimOffset = pr * 0.32
+      const rimDepth = mm(20)
+      const rimOffset = pr * 0.42
       const rimMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, rimDepth, rimOffset, rimMat)
-      rimMesh.position.y = -mm(2)
+      rimMesh.position.y = -mm(1)
       this.tableGroup.add(rimMesh)
 
-      const feltDepth = mm(10)
-      const feltOffset = pr * 0.20
+      const feltDepth = mm(12)
+      const feltOffset = pr * 0.24
       const feltMesh = this.createPocketWrap(arcPoints, pocket.mouthCenter, feltDepth, feltOffset, feltMat)
       this.tableGroup.add(feltMesh)
     }
+  }
+
+  private buildPocketCaps(material: THREE.Material): void {
+    const blockH = mm(pcolTableSpec.visuals.pocketBlockHeight)
+
+    for (const pocket of pcolTableSpec.pockets) {
+      const cap = pocket.kind === 'middle'
+        ? this.createMiddlePocketCap(pocket, blockH, material)
+        : this.createCornerPocketCap(pocket, blockH, material)
+      cap.castShadow = true
+      cap.receiveShadow = true
+      this.tableGroup.add(cap)
+    }
+  }
+
+  private createMiddlePocketCap(
+    pocket: (typeof pcolTableSpec.pockets)[number],
+    height: number,
+    material: THREE.Material,
+  ): THREE.Mesh {
+    const depthMm = pcolTableSpec.visuals.middleBlockDepth + 26
+    const outerRadiusMm = pocket.mouthWidth / 2 + 28
+    const innerRadiusMm = pocket.mouthWidth / 2 - 6
+    const bodyHalfMm = 32
+    const outward = Math.sign(pocket.mouthCenter.x) || 1
+
+    const shape = new THREE.Shape()
+    shape.moveTo(0, mm(bodyHalfMm))
+    shape.lineTo(mm(outward * depthMm), mm(bodyHalfMm))
+    shape.lineTo(mm(outward * depthMm), mm(-bodyHalfMm))
+    shape.lineTo(0, mm(-bodyHalfMm))
+    shape.absarc(0, 0, mm(outerRadiusMm), -Math.PI / 2, Math.PI / 2, outward > 0)
+
+    const hole = new THREE.Path()
+    hole.moveTo(0, mm(-innerRadiusMm))
+    hole.absarc(0, 0, mm(innerRadiusMm), -Math.PI / 2, Math.PI / 2, outward < 0)
+    hole.lineTo(0, mm(-innerRadiusMm))
+    shape.holes.push(hole)
+
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: height,
+      bevelEnabled: true,
+      bevelThickness: mm(2.2),
+      bevelSize: mm(1.8),
+      bevelSegments: 3,
+    })
+    geo.rotateX(-Math.PI / 2)
+
+    const mesh = new THREE.Mesh(geo, material)
+    mesh.position.set(mm(pocket.mouthCenter.x), height, mm(pocket.mouthCenter.y))
+    return mesh
+  }
+
+  private createCornerPocketCap(
+    pocket: (typeof pcolTableSpec.pockets)[number],
+    height: number,
+    material: THREE.Material,
+  ): THREE.Mesh {
+    const sizeMm = pcolTableSpec.visuals.cornerBlockSize + 22
+    const radiusMm = sizeMm * 0.42
+    const innerRadiusMm = (pocket.cutoutArc?.radius ?? 0) * 0.78
+    const sx = Math.sign(pocket.mouthCenter.x) || 1
+    const sy = Math.sign(pocket.mouthCenter.y) || 1
+
+    const shape = new THREE.Shape()
+    shape.moveTo(mm(-sx * sizeMm), 0)
+    shape.lineTo(mm(-sx * sizeMm), mm(-sy * radiusMm))
+    shape.quadraticCurveTo(
+      mm(-sx * sizeMm),
+      mm(-sy * sizeMm),
+      mm(-sx * radiusMm),
+      mm(-sy * sizeMm),
+    )
+    shape.lineTo(0, mm(-sy * sizeMm))
+    shape.lineTo(0, 0)
+
+    const hole = new THREE.Path()
+    const startAngle = sx < 0 && sy < 0 ? 0
+      : sx > 0 && sy < 0 ? Math.PI / 2
+      : sx > 0 && sy > 0 ? Math.PI
+      : Math.PI * 1.5
+    hole.absarc(0, 0, mm(innerRadiusMm), startAngle, startAngle + Math.PI / 2, false)
+    hole.lineTo(0, 0)
+    shape.holes.push(hole)
+
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: height,
+      bevelEnabled: true,
+      bevelThickness: mm(2.4),
+      bevelSize: mm(2),
+      bevelSegments: 3,
+    })
+    geo.rotateX(-Math.PI / 2)
+
+    const mesh = new THREE.Mesh(geo, material)
+    mesh.position.set(mm(pocket.mouthCenter.x), height, mm(pocket.mouthCenter.y))
+    return mesh
   }
 
   private getPocketArcPoints(
@@ -517,12 +589,12 @@ export class SnookerRenderer {
 
   private buildCue(): THREE.Group {
     const group = new THREE.Group()
-    const buttWood = new THREE.MeshStandardMaterial({ color: 0x4b2518, roughness: 0.42 })
-    const shaftWood = new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.5 })
+    // const buttWood = new THREE.MeshStandardMaterial({ color: 0x4b2519, roughness: 0.42 })
+    const shaftWood = new THREE.MeshStandardMaterial({ color: 0x4b2519, roughness: 0.5 })
     const ferruleMat = new THREE.MeshStandardMaterial({ color: 0xf4ecd8, roughness: 0.35 })
 
     const frontShaft = new THREE.Mesh(
-      new THREE.CylinderGeometry(mm(4.2), mm(6.2), mm(CUE_FRONT_SHAFT_LENGTH_MM), 14),
+      new THREE.CylinderGeometry(mm(4.5), mm(4.5), mm(CUE_FRONT_SHAFT_LENGTH_MM), 14),
       shaftWood,
     )
     frontShaft.rotation.x = Math.PI / 2
@@ -534,8 +606,8 @@ export class SnookerRenderer {
     )
 
     const butt = new THREE.Mesh(
-      new THREE.CylinderGeometry(mm(10.8), mm(15.8), mm(CUE_BUTT_LENGTH_MM), 16),
-      buttWood,
+      new THREE.CylinderGeometry(mm(4.5), mm(4.5), mm(CUE_BUTT_LENGTH_MM), 16),
+      shaftWood,
     )
     butt.rotation.x = Math.PI / 2
     butt.position.z = mm(
