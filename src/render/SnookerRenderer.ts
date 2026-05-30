@@ -527,10 +527,10 @@ export class SnookerRenderer {
     )
     frontShaft.rotation.x = Math.PI / 2
     frontShaft.position.z = mm(
-      CUE_TIP_LENGTH_MM
-      + CUE_FERRULE_LENGTH_MM
-      + CUE_FRONT_SHAFT_LENGTH_MM / 2
-      - CUE_TIP_TO_GROUP_ORIGIN_MM,
+      CUE_TIP_TO_GROUP_ORIGIN_MM
+      - CUE_TIP_LENGTH_MM
+      - CUE_FERRULE_LENGTH_MM
+      - CUE_FRONT_SHAFT_LENGTH_MM / 2,
     )
 
     const butt = new THREE.Mesh(
@@ -539,11 +539,11 @@ export class SnookerRenderer {
     )
     butt.rotation.x = Math.PI / 2
     butt.position.z = mm(
-      CUE_TIP_LENGTH_MM
-      + CUE_FERRULE_LENGTH_MM
-      + CUE_FRONT_SHAFT_LENGTH_MM
-      + CUE_BUTT_LENGTH_MM / 2
-      - CUE_TIP_TO_GROUP_ORIGIN_MM,
+      CUE_TIP_TO_GROUP_ORIGIN_MM
+      - CUE_TIP_LENGTH_MM
+      - CUE_FERRULE_LENGTH_MM
+      - CUE_FRONT_SHAFT_LENGTH_MM
+      - CUE_BUTT_LENGTH_MM / 2,
     )
     this.cueRearSegment = butt
 
@@ -552,14 +552,14 @@ export class SnookerRenderer {
       ferruleMat,
     )
     ferrule.rotation.x = Math.PI / 2
-    ferrule.position.z = mm(CUE_TIP_LENGTH_MM + CUE_FERRULE_LENGTH_MM / 2 - CUE_TIP_TO_GROUP_ORIGIN_MM)
+    ferrule.position.z = mm(CUE_TIP_TO_GROUP_ORIGIN_MM - CUE_TIP_LENGTH_MM - CUE_FERRULE_LENGTH_MM / 2)
 
     const tip = new THREE.Mesh(
       new THREE.CylinderGeometry(mm(3.5), mm(3.7), mm(CUE_TIP_LENGTH_MM), 12),
       new THREE.MeshStandardMaterial({ color: 0x3d8ec9 }),
     )
     tip.rotation.x = Math.PI / 2
-    tip.position.z = mm(CUE_TIP_LENGTH_MM / 2 - CUE_TIP_TO_GROUP_ORIGIN_MM)
+    tip.position.z = mm(CUE_TIP_TO_GROUP_ORIGIN_MM - CUE_TIP_LENGTH_MM / 2)
     group.add(frontShaft, butt, ferrule, tip)
     return group
   }
