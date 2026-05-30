@@ -78,7 +78,7 @@ export class SnookerRules {
   processShot(
     firstContact: string | null,
     potted: string[],
-    mode: GameMode = 'practice',
+    _mode: GameMode = 'practice',
   ): ShotResult {
     const whitePotted = potted.includes('white')
     const nonWhitePotted = potted.filter((id) => id !== 'white')
@@ -139,7 +139,6 @@ export class SnookerRules {
     potted: string[],
     whitePotted: boolean,
   ): FoulInfo | null {
-    const ballOn = this.getBallOn()
     const penaltyBase = this.getBallOnValue()
 
     if (whitePotted) {

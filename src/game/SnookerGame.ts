@@ -25,7 +25,6 @@ const FORWARD_DURATION = 0.1
 const FOLLOW_THROUGH_HOLD_DURATION = 0.18
 const POST_SHOT_PRESENTATION_DURATION = 1.05
 const FORWARD_CONTACT_CUE_OFFSET_MM = 0
-const FOLLOW_THROUGH_EXTENSION_MM = 6
 const STRIKE_CONTACT_OFFSET_MM = 4
 
 export class SnookerGame {
@@ -33,6 +32,7 @@ export class SnookerGame {
   private renderer: SnookerRenderer
   private raf = 0
   private lastTime = 0
+  private inputEnabled = false
 
   private phase: GamePhase = 'general'
   private aimAngle = 0
@@ -87,6 +87,17 @@ export class SnookerGame {
     this.onShotBlocked = cb.onShotBlocked
   }
 
+  setInputEnabled(enabled: boolean): void {
+    this.inputEnabled = enabled
+    this.keys.clear()
+    this.isDragging = false
+    this.onShotBlocked?.(null)
+
+    if (!enabled && this.phase === 'aiming') {
+      this.exitAimMode()
+    }
+  }
+
   private resetBalls(): void {
     for (const ball of createOpeningBalls()) {
       this.physics.addBall(ball.id, ball.color, ball.position)
@@ -103,6 +114,7 @@ export class SnookerGame {
   private bindInput(container: HTMLElement): void {
     // --- Drag: yaw/pitch in general, aim in aiming ---
     container.addEventListener('mousedown', (e) => {
+      if (!this.inputEnabled) return
       this.isDragging = true
       this.dragLastX = e.clientX
       this.dragLastY = e.clientY
@@ -130,6 +142,7 @@ export class SnookerGame {
 
     // --- Scroll: power in aiming only ---
     window.addEventListener('wheel', (e) => {
+      if (!this.inputEnabled) return
       e.preventDefault()
       if (this.phase === 'aiming' && !this.isCueStrokeAnimating()) {
         this.power = Math.max(0.05, Math.min(1, this.power + (e.deltaY > 0 ? -0.05 : 0.05)))
@@ -138,6 +151,7 @@ export class SnookerGame {
 
     // --- Keyboard ---
     window.addEventListener('keydown', (e) => {
+      if (!this.inputEnabled) return
       this.keys.add(e.code)
 
       if (e.code === 'KeyW' && this.phase === 'general') {
@@ -172,6 +186,7 @@ export class SnookerGame {
     })
 
     window.addEventListener('keyup', (e) => {
+      if (!this.inputEnabled) return
       this.keys.delete(e.code)
     })
   }
