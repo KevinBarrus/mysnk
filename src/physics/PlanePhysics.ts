@@ -53,6 +53,7 @@ export class PlanePhysics {
 
   private balls = new Map<string, PhysicsBall>()
   private lastCueContactTime = -1
+  private firstContactBallId: string | null = null
 
   constructor() {
     this.world.broadphase = new CANNON.SAPBroadphase(this.world)
@@ -112,8 +113,16 @@ export class PlanePhysics {
     this.balls.set(id, ball)
 
     if (id === 'white') {
-      body.addEventListener('collide', () => {
+      body.addEventListener('collide', (e: { body: CANNON.Body }) => {
         this.lastCueContactTime = this.world.time
+        if (this.firstContactBallId === null) {
+          for (const [ballId, b] of this.balls) {
+            if (b.body === e.body) {
+              this.firstContactBallId = ballId
+              break
+            }
+          }
+        }
       })
     }
 
@@ -199,6 +208,7 @@ export class PlanePhysics {
     }
 
     this.lastCueContactTime = -1
+    this.firstContactBallId = null
 
     const len = Math.hypot(direction.x, direction.y) || 1
     const nx = direction.x / len
@@ -368,6 +378,14 @@ export class PlanePhysics {
 
   getLastCueContactTime(): number {
     return this.lastCueContactTime
+  }
+
+  getFirstContact(): string | null {
+    return this.firstContactBallId
+  }
+
+  resetFirstContact(): void {
+    this.firstContactBallId = null
   }
 
   /** Resolve any initial contact stresses and force all balls to sleep. */
