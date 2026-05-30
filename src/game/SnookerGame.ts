@@ -322,6 +322,14 @@ export class SnookerGame {
       || this.cueStroke.phase === 'postShot'
   }
 
+  private isCueStrokeVisiblePhase(): boolean {
+    return this.cueStroke.phase === 'frontPause'
+      || this.cueStroke.phase === 'backswing'
+      || this.cueStroke.phase === 'forward'
+      || this.cueStroke.phase === 'followThroughHold'
+      || this.cueStroke.phase === 'postShot'
+  }
+
   private computeBackswingDistance(cueAddress: CueAddress): number {
     const baseDistance = BASE_BACKSWING_MM + this.power * (MAX_BACKSWING_MM - BASE_BACKSWING_MM)
 
@@ -534,8 +542,7 @@ export class SnookerGame {
         : this.aimDirection()
     const shouldRenderCue = renderCuePos && renderAimDir && (
       this.phase === 'aiming'
-      || this.cueStroke.phase === 'followThroughHold'
-      || this.cueStroke.phase === 'postShot'
+      || this.isCueStrokeVisiblePhase()
     )
     if (shouldRenderCue && renderCuePos && renderAimDir) {
       const postShotProgress = this.cueStroke.phase === 'postShot'

@@ -262,10 +262,10 @@ export class PlanePhysics {
     const severity = 1 - clearance / closeThreshold
     const directionBias = Math.max(Math.abs(backwards.x), Math.abs(backwards.y))
     const tipOffsetY = pcolTableCueModel.constraints.defaultTipClearance
-      + severity * 0.5 * (0.75 + directionBias * 0.25)
+      + severity * 0.68 * (0.75 + directionBias * 0.25)
     const elevation = Math.min(
       pcolTableCueModel.constraints.maxElevation,
-      pcolTableCueModel.constraints.defaultElevation + severity * 0.35,
+      pcolTableCueModel.constraints.defaultElevation + severity * 0.48,
     )
 
     return {
@@ -312,8 +312,8 @@ export class PlanePhysics {
 
     return {
       active: true,
-      tipOffsetY: 0.28 + severity * 0.45,
-      elevation: 0.12 + severity * 0.32,
+      tipOffsetY: 0.34 + severity * 0.58,
+      elevation: 0.18 + severity * 0.4,
     }
   }
 

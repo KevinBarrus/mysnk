@@ -11,6 +11,24 @@ import { tableToWorld } from '@/physics/PlanePhysics'
 
 const MM_TO_SCENE = 1 / 1000
 
+const CUE_TIP_LENGTH_MM = 20
+const CUE_FERRULE_LENGTH_MM = 26
+const CUE_FRONT_SHAFT_LENGTH_MM = 420
+const CUE_BUTT_LENGTH_MM = 900
+const CUE_VISIBLE_LENGTH_MM =
+  CUE_TIP_LENGTH_MM + CUE_FERRULE_LENGTH_MM + CUE_FRONT_SHAFT_LENGTH_MM + CUE_BUTT_LENGTH_MM
+const CUE_TIP_TO_GROUP_ORIGIN_MM = CUE_VISIBLE_LENGTH_MM - CUE_TIP_LENGTH_MM / 2
+const CUE_TIP_LOOKAHEAD_MM = 36
+const AIM_CAMERA_BEHIND_DIST_MM = 940
+const AIM_CAMERA_EYE_HEIGHT_MM = 185
+const AIM_CAMERA_LOOKAHEAD_MM = 600
+const CUE_BASE_TIP_LIFT_MM = 14
+const CUE_ELEVATION_TIP_LIFT_MM = 34
+const CUE_POST_SHOT_EXTRA_TIP_LIFT_MM = 26
+const CUE_ELEVATION_BUTT_LIFT_MM = 360
+const CUE_POST_SHOT_EXTRA_BUTT_LIFT_MM = 520
+const CUE_POST_SHOT_LOOK_LIFT_MM = 40
+
 function mm(v: number): number {
   return v * MM_TO_SCENE
 }
@@ -499,19 +517,50 @@ export class SnookerRenderer {
 
   private buildCue(): THREE.Group {
     const group = new THREE.Group()
-    const wood = new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.5 })
-    // First-person view only shows the front section of the cue.
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(mm(4.2), mm(5.2), mm(260), 12), wood)
-    shaft.rotation.x = Math.PI / 2
-    shaft.position.z = mm(130)
-    this.cueRearSegment = shaft
+    const buttWood = new THREE.MeshStandardMaterial({ color: 0x4b2518, roughness: 0.42 })
+    const shaftWood = new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.5 })
+    const ferruleMat = new THREE.MeshStandardMaterial({ color: 0xf4ecd8, roughness: 0.35 })
+
+    const frontShaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(mm(4.2), mm(6.2), mm(CUE_FRONT_SHAFT_LENGTH_MM), 14),
+      shaftWood,
+    )
+    frontShaft.rotation.x = Math.PI / 2
+    frontShaft.position.z = mm(
+      CUE_TIP_LENGTH_MM
+      + CUE_FERRULE_LENGTH_MM
+      + CUE_FRONT_SHAFT_LENGTH_MM / 2
+      - CUE_TIP_TO_GROUP_ORIGIN_MM,
+    )
+
+    const butt = new THREE.Mesh(
+      new THREE.CylinderGeometry(mm(10.8), mm(15.8), mm(CUE_BUTT_LENGTH_MM), 16),
+      buttWood,
+    )
+    butt.rotation.x = Math.PI / 2
+    butt.position.z = mm(
+      CUE_TIP_LENGTH_MM
+      + CUE_FERRULE_LENGTH_MM
+      + CUE_FRONT_SHAFT_LENGTH_MM
+      + CUE_BUTT_LENGTH_MM / 2
+      - CUE_TIP_TO_GROUP_ORIGIN_MM,
+    )
+    this.cueRearSegment = butt
+
+    const ferrule = new THREE.Mesh(
+      new THREE.CylinderGeometry(mm(4.0), mm(4.2), mm(CUE_FERRULE_LENGTH_MM), 12),
+      ferruleMat,
+    )
+    ferrule.rotation.x = Math.PI / 2
+    ferrule.position.z = mm(CUE_TIP_LENGTH_MM + CUE_FERRULE_LENGTH_MM / 2 - CUE_TIP_TO_GROUP_ORIGIN_MM)
+
     const tip = new THREE.Mesh(
-      new THREE.CylinderGeometry(mm(3.5), mm(3.5), mm(20), 12),
+      new THREE.CylinderGeometry(mm(3.5), mm(3.7), mm(CUE_TIP_LENGTH_MM), 12),
       new THREE.MeshStandardMaterial({ color: 0x3d8ec9 }),
     )
     tip.rotation.x = Math.PI / 2
-    tip.position.z = mm(270)
-    group.add(shaft, tip)
+    tip.position.z = mm(CUE_TIP_LENGTH_MM / 2 - CUE_TIP_TO_GROUP_ORIGIN_MM)
+    group.add(frontShaft, butt, ferrule, tip)
     return group
   }
 
@@ -567,20 +616,23 @@ export class SnookerRenderer {
     const len = Math.hypot(aimDir.x, aimDir.y) || 1
     const dir = new THREE.Vector3(aimDir.x / len, 0, aimDir.y / len)
 
-    const tipHeight = mm(BALL_RADIUS + 2) + mm(BALL_RADIUS * tipOffsetY * 0.9)
+    const tipHeight = mm(BALL_RADIUS + 2) + mm(BALL_RADIUS * tipOffsetY * 1.2)
     const exitStart = Math.max(0, Math.min(1, (postShotProgress - 0.16) / 0.84))
     const retreatProgress = exitStart * exitStart * (3 - 2 * exitStart)
     const liftProgress = Math.pow(exitStart, 2.2)
     const retreatMm = cueOffsetMm + 88 * retreatProgress
-    const tipLiftMm = 8 + 22 * retreatProgress
-    const buttLift = mm(220 * elevation) + mm(520 * liftProgress)
+    const tipLiftMm =
+      CUE_BASE_TIP_LIFT_MM
+      + CUE_ELEVATION_TIP_LIFT_MM * elevation
+      + CUE_POST_SHOT_EXTRA_TIP_LIFT_MM * retreatProgress
+    const buttLift = mm(CUE_ELEVATION_BUTT_LIFT_MM * elevation + CUE_POST_SHOT_EXTRA_BUTT_LIFT_MM * liftProgress)
 
     this.cueMesh.position.set(origin.x, origin.y + tipHeight + mm(tipLiftMm), origin.z)
-    this.cueMesh.position.add(dir.clone().multiplyScalar(-mm(270 + retreatMm)))
+    this.cueMesh.position.add(dir.clone().multiplyScalar(-mm(CUE_TIP_TO_GROUP_ORIGIN_MM + retreatMm)))
     const lookAtTarget = new THREE.Vector3(
-      origin.x + dir.x * mm(36),
-      origin.y + tipHeight - buttLift + mm(40 * liftProgress),
-      origin.z + dir.z * mm(36),
+      origin.x + dir.x * mm(CUE_TIP_LOOKAHEAD_MM),
+      origin.y + tipHeight - buttLift + mm(CUE_POST_SHOT_LOOK_LIFT_MM * liftProgress),
+      origin.z + dir.z * mm(CUE_TIP_LOOKAHEAD_MM),
     )
     this.cueMesh.lookAt(lookAtTarget)
     this.cueRearSegment.visible = true
@@ -677,8 +729,8 @@ export class SnookerRenderer {
     const len = Math.hypot(aimDir.x, aimDir.y) || 1
     const dir = new THREE.Vector3(aimDir.x / len, 0, aimDir.y / len)
 
-    const behindDist = mm(700)
-    const eyeHeight = mm(250)
+    const behindDist = mm(AIM_CAMERA_BEHIND_DIST_MM)
+    const eyeHeight = mm(AIM_CAMERA_EYE_HEIGHT_MM)
     const targetPos = new THREE.Vector3(
       origin.x - dir.x * behindDist,
       eyeHeight,
@@ -686,7 +738,7 @@ export class SnookerRenderer {
     )
 
     // Transition: camera moves behind cue ball, looks along aim line
-    const lookTarget = origin.clone().add(dir.clone().multiplyScalar(mm(600)))
+    const lookTarget = origin.clone().add(dir.clone().multiplyScalar(mm(AIM_CAMERA_LOOKAHEAD_MM)))
     const m = new THREE.Matrix4()
     m.lookAt(targetPos, lookTarget, new THREE.Vector3(0, 1, 0))
     const targetQuat = new THREE.Quaternion().setFromRotationMatrix(m)
@@ -751,8 +803,8 @@ export class SnookerRenderer {
     const len = Math.hypot(aimDir.x, aimDir.y) || 1
     const dir = new THREE.Vector3(aimDir.x / len, 0, aimDir.y / len)
 
-    const behindDist = mm(700)
-    const eyeHeight = mm(250)
+    const behindDist = mm(AIM_CAMERA_BEHIND_DIST_MM)
+    const eyeHeight = mm(AIM_CAMERA_EYE_HEIGHT_MM)
     this.camera.position.set(
       origin.x - dir.x * behindDist,
       eyeHeight,
@@ -760,19 +812,19 @@ export class SnookerRenderer {
     )
 
     // Base look direction: along aim line
-    const baseTarget = origin.clone().add(dir.clone().multiplyScalar(mm(600)))
+    const baseTarget = origin.clone().add(dir.clone().multiplyScalar(mm(AIM_CAMERA_LOOKAHEAD_MM)))
     const baseDir = baseTarget.clone().sub(this.camera.position).normalize()
 
     // Apply mouse-drag view offset (yaw around world Y, pitch around local right)
     const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this.aimViewYaw)
-    let viewDir = baseDir.clone().applyQuaternion(yawQuat)
+    const viewDir = baseDir.clone().applyQuaternion(yawQuat)
     const right = new THREE.Vector3().crossVectors(viewDir, new THREE.Vector3(0, 1, 0)).normalize()
     if (right.length() > 0.001) {
       const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, this.aimViewPitch)
       viewDir.applyQuaternion(pitchQuat)
     }
 
-    const lookTarget = this.camera.position.clone().add(viewDir.multiplyScalar(mm(600)))
+    const lookTarget = this.camera.position.clone().add(viewDir.multiplyScalar(mm(AIM_CAMERA_LOOKAHEAD_MM)))
     this.camera.lookAt(lookTarget)
   }
 
@@ -879,7 +931,7 @@ export class SnookerRenderer {
     const centerDir = new THREE.Vector3(0, 0, 0).sub(this.camera.position).normalize()
     // Apply relYaw around world Y
     const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this.relYaw)
-    let viewDir = centerDir.clone().applyQuaternion(yawQ)
+    const viewDir = centerDir.clone().applyQuaternion(yawQ)
     // Apply relPitch around local right axis
     const right = new THREE.Vector3().crossVectors(viewDir, new THREE.Vector3(0, 1, 0)).normalize()
     if (right.length() > 0.001) {

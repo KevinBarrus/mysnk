@@ -1,159 +1,293 @@
-# Product Requirements Document
+# 产品需求文档
 
-## Product Name
+## 产品名称
 
-AI Snooker Simulator
+AI 斯诺克模拟器
 
-Reference: [pcol](http://www.heyzxz.me/pcol/) — replicate core feel first; LLM star players come at hackathon.
-
----
-
-## Product Vision
-
-Immersive web-based 3D snooker: play **SINGLE PLAY** vs a heuristic AI (pcol-style), or **PRACTISE** solo. Before hackathon: a complete offline single-player game. During hackathon: add LLM tactical “star” players via structured shot plans and personality prompts.
-
-**Not** a professional physics simulator — believable feel and broadcast atmosphere matter more.
+参考产品：[pcol](http://www.heyzxz.me/pcol/)  
+当前目标不是完整复刻职业斯诺克模拟器，而是做出一个 **“AI 参与对抗、成长、反馈与叙事”** 的斯诺克产品。
 
 ---
 
-## Game Modes (v1)
+## 产品愿景
 
-| Mode | Description |
-|------|-------------|
-| **SINGLE PLAY** | 1v1 vs **AI-1** (no LLM). Single frame, winner by score. Standard 15 reds + colours on spots. |
-| **PRACTISE** | Player only, same table/rules, no AI turn. |
+这是一个网页 3D 斯诺克产品。用户既可以打球，也可以体验：
 
-**Break order:** Player breaks first; alternate breaker each new frame (future multi-frame).
+- 有人格的 AI 对手
+- 会吐槽、会点评、会复盘的 AI 教练
+- 通过练球和比赛赚取“英镑”的成长系统
+- 从练习者逐步挑战明星选手的闯关体验
 
-**Deferred:** Easy/Medium/Hard, multi-frame match (e.g. 35 frames / 18 wins), save games, practice ball layouts (snake, T, X, cross, long pot, five-ball drill).
+和原始设想相比，现在更强调：
+
+- **产品因为 AI 而明显不同**
+- 可在黑客松演示中快速体现价值
+- 物理与规则逻辑只要“能玩、能进袋、看起来合理”即可，不追求细节极致真实
 
 ---
 
-## Core Features
+## 当前版本目标
 
-### 1. Basic Gameplay (P1)
+在黑客松剩余时间内，优先做出一个可演示闭环：
 
-- Standard snooker layout and ball spots
-- Cue ball placement in the **D** (click + `PLACE CUE BALL` flow)
-- Aim: ghost ball, object-ball path, cue-ball path (when in range, per pcol)
-- Shot: power, **spin** (top/back/side), **elevation** (avoid cue clipping through balls)
-- Ball collision, cushion reflection, pocket detection
-- Turn switching
+1. 用户可以打球
+2. 用户可以练球 / 比赛
+3. 系统可以计分、显示比分
+4. AI 对手能体现不同选手的人格与心理状态
+5. AI 教练能根据用户表现给出反馈与复盘
+6. 用户能通过表现获得英镑，并解锁进一步挑战
 
-Controls aligned with pcol where possible: `W` aim, `SPACE` shot, wheel power, `Alt` spin, `C` clear spin, elevation for blocked cue lines.
+---
 
-### 2. Spin & Cue (P2 — full pcol tier)
+## 游戏模式
 
-- Top / back / side spin — visually believable; simplified physics correction
-- Cue elevation when balls block the cue line between rest and cue ball
-- Masse / dig visual acceptable with 2D physics (see Architecture extensibility)
+| 模式 | 说明 |
+|------|------|
+| `SINGLE PLAY` | 玩家对 AI 的单局比赛 |
+| `PRACTISE` | 玩家自主练球，作为训练与赚取英镑的主要入口 |
+| `CHALLENGE` | 闯关 / 挑战模式，逐步挑战更强 AI |
 
-### 3. Rule System
+---
 
-#### P2 (must ship in 5-day MVP)
+## 核心功能
 
-- Potting and scoring; colour **re-spot after pot** during reds phase; **no re-spot** in colours-only clearance (match snooker)
-- Fouls:
-  - Cue ball potted
-  - Wrong ball hit first
-  - No ball hit (**miss** — penalty = **ball on** value: yellow/green/brown → 4; blue 5; pink 6; black 7; reds phase per snooker logic)
-  - Hit wrong colour first (e.g. should hit red, hit blue → 5)
-- **Nominate colour** when reds remain: modal with six colours → user picks → referee TTS e.g. *"Blue Ball"* → then shot allowed
-- **Unreachable frame** (not raw 19-point lead):  
-  `(leaderScore − trailerScore) − remainingPointsOnTable > 19`  
-  where `remainingPointsOnTable` uses standard snooker counting (reds as 8 potential each + values of colours on table; colours-only phase = sum of on-table colour values)
-  - Player leading → AI stops; TTS **frame conceded**; end-of-frame stats panel
-  - AI leading → **Concede** button only after **AI break has ended**; on concede → end-of-frame stats immediately
-- End-of-frame panel (pcol-style): POINTS, MAX BREAK, FOULS, ACCURACY, TIME — RETRY / BACK
+### 1. 基础打球体验（P0）
 
-#### P4 (post-MVP / hackathon buffer)
+这是所有演示的前提，必须成立：
+
+- 标准斯诺克球桌布局
+- 白球放置
+- 瞄准
+- 出杆
+- 球运动、碰撞、进袋
+- 回合切换
+- 基础可玩、不卡死
+
+不要求：
+
+- 职业级旋转模拟
+- 完全真实库边反弹
+- 细节级物理还原
+
+只要求：
+
+- 球能打
+- 球能进
+- 看起来基本合理
+
+---
+
+### 2. 基础规则与计分（P0）
+
+必须支持最小闭环规则：
+
+- 合法进球加分
+- 非法球 / 犯规基础判定
+- 双方比分更新
+- 单杆分数统计
+
+当前优先实现的规则：
+
+- 红球 1 分
+- 彩球按标准分值计分
+- 基础非法球判断（如击打错误目标球、白球落袋、未碰球等）
+
+高级规则可延后：
 
 - Free ball
-- Re-spotting edge cases tied to free ball
-- Three misses → loss of frame
-
-### 4. JSON Snapshot System (P4)
-
-- Planar table coords in **mm**; origin = **blue ball spot** (static), not the blue ball object
-- Axes: **y** parallel to long side (black/pink spots on **y+**); **x** parallel to short side
-- v1: **x, y only** (ignore ball height); schema versioned for future 2.5D / z
-- Per shot (and before each shot for cue clipping):
-  - Each ball: id, position, on-table / potted, **legally hittable** (rule-based ball-on)
-  - Cue tip and butt positions
-- Post-hackathon snapshot may add **geometric visibility** (line-of-sight) for LLM
-- Used for: reposition/recovery, last-shot replay, LLM decisions
-
-Example shape:
-
-```json
-{
-  "schemaVersion": 1,
-  "balls": [{ "id": "red_1", "x": 120, "y": -340, "potted": false, "legal": true }],
-  "scores": { "player": 45, "ai": 12 },
-  "turn": "player",
-  "ballOn": "red",
-  "cue": { "tip": { "x": 0, "y": 0 }, "butt": { "x": -80, "y": 120 } }
-}
-```
-
-### 5. AI Opponents
-
-#### MVP (5 days): AI-1
-
-- Heuristic / decision-tree opponent (pcol-like), tunable parameters (e.g. pot success rate)
-- Outputs structured **ShotPlan** consumed by shared **ShotExecutor**
-- **No LLM**
-
-#### Hackathon (P5): Star player
-
-- One star first (e.g. Ronnie-style prompt); more later
-- LLM reads JSON snapshot → returns **ShotPlan** (schema) + optional commentary text
-- Cache plans by situation hash when possible; skip LLM on repeats
-- Star personality = prompt describing style; same pipeline as generic LLM AI
-
-### 6. Replay (MVP)
-
-- **Last shot only:** store pre-shot `GameSnapshot` + `ShotPlan`; replay restores and re-executes or re-animates
-- Interface预留 for multi-shot history later
-
-### 7. Audio & Referee (P3)
-
-- SFX: cue hit, pocket, collision
-- **All referee speech via browser TTS (English)** — Triple Crown style
-  - **Every pot:** announce **cumulative** frame score (e.g. *"Thirty-four"*)
-  - Break end: *"{Name}, seventy"* (use number-to-words library)
-  - Frame end when unreachable: *"{Name}, one hundred and eleven, end the frame"*
-  - Player concede: *"{LeaderName}, {score}, frame conceded"*
-  - Fouls, colour nomination, frame conceded — all TTS
-
-### 8. UI / HUD
-
-- Dark club atmosphere (pcol-inspired room + table lighting)
-- Main menu: **SINGLE PLAY**, **PRACTISE**, **ABOUT**
-- Scoreboard: **World Championship bar** first — yellow name strips, frame scores, centre **Single Frame** for 1-frame games; fallback to pcol bar if needed
-- Ball-on indicator (red / colour icon)
-- BRK + frame score blocks
-- Foul overlay (e.g. `FOUL — -5: ILLEGAL FIRST HIT`)
-- Legal target ring under balls (colour hint when wrong ball targeted)
-- Future: AI thinking / commentary panel for LLM stars
+- 三次 miss 判负
+- 完整重置球与复杂边界规则
 
 ---
 
-## Development Phases (5-day solo → hackathon)
+### 3. 比分牌与 HUD（P0）
 
-| Phase | Deliverable |
-|-------|-------------|
-| **P1** | Table, physics, pots, aim lines, D placement, turns |
-| **P2** | P2 rules, nominate colour, unreachable/concede, end-frame stats, **AI-1**, spin + elevation |
-| **P3** | WC scoreboard, full English TTS |
-| **P4** | JSON snapshots, P4 rules, extensible coords/physics, last-shot replay |
-| **P5** (hackathon) | DeepSeek LLM + one star prompt |
+为了演示完整性，需要最小可用的 HUD：
+
+- 玩家分数
+- AI 分数
+- 当前单杆
+- 当前球权 / 回合信息
+- 必要时显示犯规提示
+
+当前不要求复杂锦标赛比分系统，但界面应具备“正式比赛感”。
 
 ---
 
-## Non-Goals
+### 4. 球桌与球馆表现（P0）
 
-- Professional physics / VR / multiplayer / AAA characters
-- Full match replay timeline
-- Backend beyond optional LLM proxy for production
-- Multi-frame championship match + save (v1)
+视觉上需要达到：
+
+- 球桌结构完整
+- 球馆环境不空、不穿帮
+- 氛围接近 pcol
+- 球桌、库边、袋口、球馆风格统一
+
+当前阶段：
+
+- 球桌与球馆属于重要展示面
+- 但不能为了视觉效果破坏规则、碰撞和出杆逻辑
+
+---
+
+### 5. AI 对手人格化（P1）
+
+这是黑客松中最重要的 AI 展示点之一。
+
+目标：
+
+- AI 不只是“会出杆的程序”
+- AI 能体现不同选手的心理状态、性格和比赛气质
+- 在界面中输出文本，让用户感受到“这是不同的人”
+
+示例：
+
+- 奥沙利文：自信、斗狠、进攻性强
+- 希金斯：冷静、算球谨慎、压迫感强
+
+最低要求：
+
+- AI 每回合 / 每关键球能输出短文本
+- 文本与选手人格一致
+- 最好与局面和结果相关，而不是纯随机文案
+
+---
+
+### 6. AI 教练（P1）
+
+训练模式和赛后反馈的核心功能。
+
+包含两类体验：
+
+#### 训练中即时反馈
+
+- 用户打丢简单球时，教练会吐槽 / 骂你
+- 用户打出好球时，教练会表扬或指出思路
+
+#### 完成训练 / 比赛后的复盘
+
+- 教练总结本局表现
+- 指出问题与亮点
+
+关键难点：
+
+- AI 不能直接理解底层物理，需要由程序提供结构化的击球摘要
+- 例如：
+  - 是否是简单球
+  - 是否有明显进攻机会
+  - 是否打丢
+  - 白球走位是否失控
+  - 是否造成犯规
+
+AI 教练负责“解释、评价、复盘”，不是自己从原始物理世界中做裁判。
+
+---
+
+### 7. 练球赚英镑（P1）
+
+训练模式下，玩家可依据单杆表现获得英镑奖励。
+
+示例门槛：
+
+- 单杆 30 分
+- 单杆 50 分
+- 破百
+- 147
+
+系统要求：
+
+- 完成一杆或完成一次训练后，可结算奖励
+- 英镑作为成长资源存在
+- 用户能看到自己的英镑总数
+
+当前阶段建议：
+
+- 先做最小版本
+- 本地持久化优先
+- 不强求完整账号体系
+
+---
+
+### 8. 用户注册 / 登录（P2，可极简）
+
+若时间允许，可支持最简单账号系统：
+
+- 用户名
+- 密码
+
+但当前不应过度投入在账号系统本身。  
+黑客松阶段更重要的是：
+
+- AI 体验
+- 可玩闭环
+- 成长演示
+
+如果账号系统来不及，可退化为本地存档 / 单设备用户。
+
+---
+
+### 9. 闯关系统（P2，演示版）
+
+核心思路：
+
+1. 玩家先通过练球赚英镑
+2. 当练球收益达到阶段上限后，需要参加比赛
+3. 玩家需要完成三场比赛挑战
+4. 三场都赢后，进入更高阶段
+5. 可挑战更强、更有性格的 AI 选手
+
+闯关的产品意义：
+
+- 把“训练、比赛、成长、AI 对手”串成一条线
+- 提供长期目标
+
+当前阶段只做演示版，不必实现完整真实世界排名系统。
+
+---
+
+## 黑客松优先级
+
+### P0：必须完成
+
+- 基础可玩闭环
+- 出杆与收杆稳定
+- 基础规则与计分
+- 比分牌 / HUD 最小闭环
+- 球桌与球馆可展示
+
+### P1：强烈建议完成
+
+- AI 对手人格化文本
+- AI 教练最小版反馈 / 复盘
+- 练球赚英镑
+
+### P2：能做则做
+
+- 闯关最小版
+- 极简注册 / 登录
+
+---
+
+## 非目标
+
+当前黑客松阶段不追求：
+
+- 职业级物理精度
+- 完整世界排名体系
+- 多人联机
+- VR
+- AAA 级角色系统
+- 完整多局赛事流程
+- 全量复杂规则
+- 完整回放时间线
+
+---
+
+## 一句话产品表达
+
+这不是一个普通斯诺克小游戏，而是一个 **AI 驱动的斯诺克成长体验**：
+
+- AI 对手有性格
+- AI 教练会点评你
+- 玩家通过训练和比赛积累英镑
+- 再去挑战更强、更有个性的选手

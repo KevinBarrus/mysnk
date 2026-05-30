@@ -1,34 +1,52 @@
-# AI Snooker Simulator
+# AI 斯诺克模拟器
 
-Inspired by [pcol](http://www.heyzxz.me/pcol/). Immersive web snooker — **not** pro physics.
+灵感来自 [pcol](http://www.heyzxz.me/pcol/)。目标是做一个有沉浸感的网页斯诺克产品，**不是**职业级物理模拟器。
 
-## Timeline
+## 当前阶段
 
-- **5 days (solo):** Playable SINGLE PLAY + PRACTISE, heuristic **AI-1**, no LLM
-- **Hackathon:** LLM star via `ShotPlan` + DeepSeek
+- **黑客松阶段：** 优先做出“AI 让产品变得不一样”的体验
+- 基础要求仍然是：可玩、可进球、可计分、可展示
+- 当前重点从“高精度物理”转向：
+  - AI 对手人格化
+  - AI 教练反馈 / 复盘
+  - 练球赚英镑与挑战成长
 
-## Stack
+## 技术栈
 
-React, Vite, three.js, cannon-es, Tailwind, Zustand, DeepSeek (hackathon only)
+React、Vite、three.js、cannon-es、Tailwind、Zustand、DeepSeek（AI 功能）
 
-## Principles
+## 核心原则
 
-- Immersion > realism; modular; lightweight assets; no over-engineering
-- Coords: **blue spot = origin**, mm, 2D now — **extensible** for 2.5D
-- AI picks tactics → **`ShotPlan` → `ShotExecutor`**; physics stays dumb
+- 沉浸感 > 真实性
+- AI 体验 > 物理细节
+- 模块化、轻资产、不过度设计
+- 坐标系：**蓝球点为原点**，单位 mm，当前以 2D 平面为主，可扩展到 2.5D
+- AI 决策输出结构化 `ShotPlan`，物理层保持简单稳定
+- 球桌几何以统一接口为单一真源，避免渲染、碰撞、出杆逻辑各写各的
 
-## Phases
+## 当前优先级
 
-1. Table, physics, pots, aim  
-2. Rules, AI-1, spin/elevation, frame end stats  
-3. WC scoreboard + English TTS (cumulative pots, breaks)  
-4. JSON snapshots, P4 rules, last-shot replay  
-5. LLM + star prompt  
+1. 基础可玩闭环：瞄准、出杆、碰撞、进袋、回合推进
+2. 出杆与收杆逻辑稳定
+3. 基础规则与计分
+4. 比分牌 / HUD 最小闭环
+5. 球桌与球馆达到可展示状态
+6. AI 对手人格化文本输出
+7. AI 教练最小版反馈 / 复盘
+8. 练球赚英镑与最小成长闭环
 
-## Do NOT Add (v1)
+## 暂不追求
 
-Multiplayer, VR, heavy models, pro physics, multi-frame/save, full replay timeline
+- 职业级物理精度
+- 多人联机
+- VR
+- 重资产角色 / 大量动画
+- 完整多局赛事系统
+- 完整世界排名体系
+- 完整回放时间线
 
-## Docs
+## 文档
 
-Details: `PRD.md`, `ARCHITECTURE.md`. UI ref: `ExampleImage/`.
+- 产品需求：`PRD.md`
+- 系统架构：`ARCHITECTURE.md`
+- UI / 参考图：`ExampleImage/`

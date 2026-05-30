@@ -308,11 +308,11 @@ export const pcolTableSpec: TableSpec = {
     railProximityThreshold: 31.5,
     ballOverlapTolerance: 1,
     minBackswingLength: 140,
-    defaultTipClearance: 0.2,
-    defaultElevation: 0.08,
-    maxElevation: 0.43,
+    defaultTipClearance: 0.28,
+    defaultElevation: 0.16,
+    maxElevation: 0.62,
     railElevationCurve: {
-      startClearance: 31.5,
+      startClearance: 42,
       fullElevationClearance: 0,
     },
     jawBlockers: [

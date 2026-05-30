@@ -1,197 +1,385 @@
-# System Architecture
+# 系统架构说明
 
-## Tech Stack
+## 技术栈
 
-| Layer | Choice |
-|-------|--------|
-| App | React, Vite, TailwindCSS |
-| 3D | three.js |
-| Physics | cannon-es (planar v1) |
-| State | Zustand |
-| AI (hackathon) | DeepSeek API (OpenAI-compatible) |
-| TTS | Web Speech API + number-to-words (or similar) |
+| 层级 | 方案 |
+|------|------|
+| 应用 | React、Vite、TailwindCSS |
+| 3D 渲染 | three.js |
+| 物理 | cannon-es（当前以平面 2D 近似为主） |
+| 状态管理 | Zustand / 当前项目内全局状态 |
+| AI | DeepSeek API（OpenAI 兼容） |
+| TTS | Web Speech API |
 
 ---
 
-## High-Level Flow
+## 当前架构目标
+
+当前不是追求“高精度物理模拟架构”，而是追求在黑客松中尽快做出：
+
+1. 可玩的斯诺克基础体验
+2. 可展示的球桌与球馆
+3. 规则与计分闭环
+4. AI 对手人格化
+5. AI 教练反馈 / 复盘
+6. 英镑成长与最小闯关体验
+
+因此架构原则如下：
+
+- 物理层保持简单稳定
+- 规则层能支撑基础比赛与训练
+- AI 层主要消费结构化摘要，而不是直接理解原始物理
+- UI 层要能承载对手人格文本、教练反馈、成长信息
+- 球桌几何必须保持统一接口，避免视觉与碰撞脱节
+
+---
+
+## 高层流程
 
 ```text
-UI / HUD / TTS
-      ↓
-GameController (state machine: menu → place ball → aim → shot → resolve → end frame)
-      ↓
-┌─────────────┬──────────────┬─────────────────┐
-│ RulesEngine │ PhysicsWorld │ TacticalPlanner │
-└─────────────┴──────────────┴─────────────────┘
-      ↓
-SnapshotStore / ReplayStore (last shot)
-      ↓
-ShotExecutor ← ShotPlan
+UI / HUD / AI 文本 / 训练反馈
+          ↓
+GameController
+（菜单 → 练球 / 比赛 → 瞄准 → 出杆 → 结算 → 反馈）
+          ↓
+┌─────────────┬──────────────┬────────────────────┐
+│ RulesEngine │ PhysicsWorld │ Tactical / AI Layer│
+└─────────────┴──────────────┴────────────────────┘
+          ↓
+Snapshot / ShotSummary / RewardSummary
+          ↓
+AI 对手 / AI 教练 / 英镑结算 / 赛后复盘
 ```
 
-**MVP planner:** `HeuristicPlanner` (AI-1).  
-**Hackathon planner:** `LlmPlanner` → DeepSeek → `ShotPlan` JSON.
+---
+
+## 当前关键设计取舍
+
+### 1. 物理简单化
+
+当前物理只需满足：
+
+- 球能动
+- 球能碰撞
+- 球能进袋
+- 看起来基本合理
+
+不追求：
+
+- 极高精度旋转
+- 真实级库边反射
+- 职业比赛级细节
+
+### 2. AI 主要消费结构化信息
+
+AI 功能不能直接依赖底层物理细节，否则开发和调试成本过高。
+
+正确做法是：
+
+- 游戏系统先产生结构化摘要
+- AI 再基于摘要生成：
+  - 对手心理 / 战术文本
+  - 教练吐槽 / 反馈
+  - 赛后复盘
+
+### 3. 球桌接口统一
+
+球桌相关数据必须由统一接口驱动：
+
+- `pcolTableSpec`
+- `buildTableRenderModel`
+- `buildTableCollisionModel`
+- `buildTableCueModel`
+
+这样可以保证：
+
+- 渲染一致
+- 碰撞一致
+- 出杆约束一致
 
 ---
 
-## Extensibility (2D now, 2.5D later)
+## 坐标系统
 
-Design so v1 paths do not block Z / advanced shots.
-
-| Concern | v1 | Extension |
-|---------|----|-----------|
-| Position | `{ x, y }` mm | `Position` type with optional `z?` |
-| Physics | `PlanePhysics` wrapping cannon-es | `PhysicsWorld` interface; future `Physics25D` |
-| Snapshot | `schemaVersion: 1` | Bump version when adding visibility / z |
-| Shot | `ShotPlan` (angle, power, spin, elevation) | Same schema; executor may use z later |
-
-Cue anti-clipping: before each shot, update cue tip/butt in snapshot plane; if segment intersects balls, raise **elevation** on cue mesh (visual); physics remains 2D unless masse is added later.
+- 原点：**蓝球点**
+- 单位：**mm**
+- `x`：沿球桌短边方向
+- `y`：沿球桌长边方向，黑球 / 粉球方向为正
+- 当前版本以二维平面为主
+- 未来如有必要，可扩展到 2.5D
 
 ---
 
-## Coordinate System
-
-- **Origin:** blue ball **spot** `(0, 0)` mm — never moves
-- **y:** parallel to long edge; black spot, pink spot on **y > 0**
-- **x:** parallel to short edge
-- Real table/ball sizes in mm (snooker ball diameter 52.5 mm; table per standard ratios in constants module)
-- Ignore ball height in physics and JSON v1
-
----
-
-## Core Modules
+## 核心模块
 
 ### `src/game/`
 
-- Global match/frame state (Zustand)
-- Turn, breaker alternation, ball-on, nominated colour
-- `getRemainingPoints(state)` for unreachable-frame check  
-  `(leader − trailer) − remaining > 19`
-- Frame end: stats aggregation, concede flow
-- Snapshot read/write; integrates `ReplayStore`
+负责整体流程控制：
+
+- 当前模式（练球 / 比赛 / 挑战）
+- 回合推进
+- 出杆前后状态切换
+- 单局状态
+- 分数状态
+- 单杆状态
+- 英镑结算触发
+- AI 对手 / AI 教练调用时机
+
+这里是整个产品逻辑的调度中心。
+
+---
 
 ### `src/physics/`
 
-- cannon-es world: balls, cushions, pockets
-- Spin correction (visual-first)
-- Sync mesh positions from bodies
-- Implements `PhysicsWorld` interface
+负责底层物理：
 
-### `src/rules/`
+- 球体
+- 碰撞
+- 袋口判定
+- 库边
+- 出杆约束
 
-- Pot validation, scores, breaks
-- Colour re-spot vs clearance phase
-- Fouls and ball-on penalties (miss = ball on value)
-- Turn switch, foul recovery (D placement when applicable)
-- P4: free ball, three-miss
+要求：
+
+- 稳定
+- 简单
+- 与球桌统一接口保持一致
+
+当前不建议继续在这里投入大量时间做高精度优化。
+
+---
+
+### `src/table/`
+
+负责球桌统一定义与派生：
+
+- `pcolTable.ts`
+  - 球桌单一真源
+- `buildTableModels.ts`
+  - 派生渲染模型
+  - 派生碰撞模型
+  - 派生出杆约束模型
+
+这是球桌视觉与玩法边界的核心。
+
+---
+
+### `src/render/`
+
+负责 three.js 视觉层：
+
+- 球桌可视化
+- 球馆环境
+- 球与球杆表现
+- 灯光
+- 镜头
+
+当前重点：
+
+- 形成接近 pcol 的球馆与球桌氛围
+- 与统一球桌接口协作
+- 不要为了视觉方便绕过底层几何定义
+
+---
+
+### `src/rules/`（如后续继续整理）
+
+负责规则判断：
+
+- 合法进球
+- 犯规
+- 加分
+- 单杆统计
+- 回合切换
+
+当前黑客松阶段只需要完成基础闭环规则。
+
+---
 
 ### `src/ai/`
 
-- **`ShotPlan`** (schema): `intent`, `targetBallId`, `aim`, `power`, `spin`, `elevation?`, `commentary?`
-- **`ShotExecutor`:** plan → apply impulse / aim robotically for AI-1 and LLM
-- **`HeuristicPlanner`:** MVP opponent
-- **`LlmPlanner`:** hackathon — prompt + snapshot → `ShotPlan`; response cache by hash(snapshot + ballOn)
-- **`StarProfiles`:** prompt templates per star (one first)
+当前 AI 层建议分成三部分：
 
-### `src/ui/`
+#### 1. AI 对手决策
 
-- Menu: SINGLE PLAY, PRACTISE, ABOUT
-- WC scoreboard component (Single Frame centre label)
-- Aim HUD, control hints, foul toast, nominate-colour modal
-- End-frame stats overlay
-- Concede button (gated: AI break ended, unreachable true)
+- 基础 AI：启发式决策
+- 后续 / 黑客松版本：LLM 辅助的明星选手人格化
 
-### `src/audio/`
+输出结构：
 
-- SFX manager
-- **`RefereeTTS`:** all spoken events (pots cumulative, breaks, fouls, nomination, frame end, concede)
-- Uses `number-to-words` for spoken scores
+- `ShotPlan`
 
-### `src/replay/`
+#### 2. AI 对手人格文本
 
-- **`ReplayStore`:** last `{ snapshotBefore, shotPlan }`
-- Replay mode: restore snapshot, re-run `ShotExecutor` or playback animation
+输入：
 
----
+- 当前局面摘要
+- 当前分差
+- 当前阶段（领先 / 落后 / 关键球 / 防守局面）
+- 选手人格设定
 
-## Snapshot Schema (v1)
+输出：
 
-```typescript
-interface GameSnapshot {
-  schemaVersion: 1;
-  balls: Array<{
-    id: string;
-    x: number;
-    y: number;
-    potted: boolean;
-    legal: boolean; // rule ball-on
-  }>;
-  scores: { player: number; ai: number };
-  turn: 'player' | 'ai';
-  ballOn: 'red' | 'yellow' | 'green' | 'brown' | 'blue' | 'pink' | 'black' | null;
-  nominatedColour?: 'yellow' | 'green' | 'brown' | 'blue' | 'pink' | 'black';
-  cue: { tip: { x: number; y: number }; butt: { x: number; y: number } };
-}
-```
+- 短文本
+- 显示该选手的心理状态、风格、比赛气质
 
-Hackathon may add `visible: boolean` per ball (line-of-sight) without breaking v1 consumers if version bumped.
+#### 3. AI 教练
+
+输入：
+
+- 练球或比赛结束后的 `ShotSummary` / `SessionSummary`
+- 用户击球表现标签
+
+输出：
+
+- 即时点评
+- 吐槽 / 表扬
+- 赛后复盘
 
 ---
 
-## AI Pipeline (hackathon)
+## 建议新增的摘要层
+
+为了让 AI 真正可用，建议游戏系统在每杆后产出结构化摘要。
+
+### `ShotSummary`
+
+建议包含：
+
+- 当前模式：练球 / 比赛
+- 出杆人：玩家 / AI
+- 目标球类型
+- 是否命中首个合法目标
+- 是否进球
+- 进了哪颗球
+- 得分多少
+- 是否犯规
+- 是否简单球失误
+- 白球最终位置是否理想
+- 是否形成连续进攻机会
+
+### `FrameSummary` / `SessionSummary`
+
+建议包含：
+
+- 最终比分
+- 单杆最高分
+- 犯规次数
+- 关键失误
+- AI / 玩家整体表现标签
+
+这些摘要是 AI 文本层的核心输入。
+
+---
+
+## 英镑成长系统
+
+当前建议作为独立轻量模块存在。
+
+### 需要维护的数据
+
+- 当前英镑总数
+- 最近一次奖励来源
+- 训练奖励次数 / 阶段
+- 当前挑战阶段
+- 已解锁对手
+
+### 奖励来源
+
+- 训练单杆分数门槛
+- 比赛胜利
+- 特殊成就（可后续补）
+
+当前阶段建议优先本地持久化，不强依赖完整后端账号系统。
+
+---
+
+## 闯关系统
+
+当前只建议做演示版：
 
 ```text
-Shot ends → GameSnapshot
-         → LlmPlanner (star prompt + snapshot JSON)
-         → ShotPlan (+ optional commentary for UI)
-         → ShotExecutor → physics
+练球
+  ↓
+赚英镑
+  ↓
+达到阈值
+  ↓
+三场挑战赛
+  ↓
+全部胜利
+  ↓
+解锁更强 / 更有个性的明星选手
 ```
 
-**Do not** parse natural language for execution. Commentary is display-only.
+它的作用是把：
 
-**Caching:** `hash(normalizedSnapshot + ballOn)` → stored `ShotPlan`; optional commentary refresh skipped.
+- 训练
+- 成长
+- AI 对手
+- 比赛目标
 
----
-
-## API Keys & Deployment
-
-| Environment | LLM key |
-|---------------|---------|
-| Local / hackathon dev | `VITE_DEEPSEEK_API_KEY` in `.env.local` (gitignored) |
-| Production | Server proxy; `DEEPSEEK_API_KEY` on server only — **never** ship VITE secret in public builds |
-
-Provide `.env.example` with variable names only.
+串成一条产品主线。
 
 ---
 
-## Render / Game Loop
+## 渲染 / 游戏循环
 
 ```text
-Input (aim / power / spin / elevation)
-  → update cue pose (clip test vs balls)
-  → on SHOT: SnapshotStore.saveBeforeShot()
-  → PhysicsWorld.step until rest
-  → RulesEngine.evaluate()
-  → RefereeTTS (pot cumulative, foul, etc.)
-  → if AI turn: HeuristicPlanner.plan() → ShotExecutor
-  → SnapshotStore.saveAfterShot()
-  → render three.js frame
+输入（瞄准 / 力量 / 出杆）
+  → 更新球杆姿态
+  → 执行出杆
+  → PhysicsWorld.step() 直到静止
+  → RulesEngine 结算
+  → 更新比分 / 单杆 / 回合
+  → 产出 ShotSummary
+  → 若是 AI 比赛：触发 AI 对手文本
+  → 若是训练或局后：触发 AI 教练反馈 / 复盘
+  → 若满足条件：结算英镑奖励
+  → UI 刷新
+  → three.js 渲染
 ```
 
 ---
 
-## Development Phases
+## 开发优先级
 
-| Phase | Scope |
-|-------|--------|
-| **P1** | Scene, table, balls, cannon, pots, aim lines, D placement, turns |
-| **P2** | Rules (P2 list), AI-1, spin/elevation, unreachable/concede, end-frame stats |
-| **P3** | WC scoreboard, RefereeTTS full coverage |
-| **P4** | Snapshots mm, P4 rules, ReplayStore last shot, extensibility hooks |
-| **P5** | LlmPlanner + one star profile |
+### P0
+
+- 基础可玩
+- 出杆 / 收杆稳定
+- 基础规则与计分
+- 比分牌
+- 球桌与球馆表现
+
+### P1
+
+- AI 对手人格化
+- AI 教练最小版
+- 练球赚英镑
+
+### P2
+
+- 闯关最小版
+- 极简注册 / 登录
 
 ---
 
-## Reference Assets
+## 非目标
 
-UI/UX reference: `ExampleImage/` (pcol screenshots, `标准记分牌.png`).
+当前阶段不优先：
+
+- 完整职业物理模拟
+- 完整世界排名系统
+- 复杂账号系统
+- 大型后端服务
+- 多人联机
+- 全量高级规则
+
+---
+
+## 参考资源
+
+- `ExampleImage/`
+- `标准记分牌.png`
+- 用户后续提供的真实世界排名与英镑数据文档

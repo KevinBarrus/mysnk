@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { SnookerGame, type GamePhase } from '@/game/SnookerGame'
+import { Scoreboard } from '@/components/Scoreboard'
 
 export function GameCanvas() {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -38,6 +39,15 @@ export function GameCanvas() {
   return (
     <div className="relative h-screen w-full overflow-hidden bg-[#1a1510]">
       <div ref={hostRef} className="h-full w-full" />
+
+      <div className="pointer-events-none absolute left-[17px] top-[18px] z-10">
+        <Scoreboard
+          playerName="PLAYER 1"
+          score={0}
+          breakScore={0}
+          ballOn="red"
+        />
+      </div>
 
       <div className="pointer-events-none absolute left-0 right-0 top-0 flex justify-between p-4 text-sm text-white/90">
         <div>
