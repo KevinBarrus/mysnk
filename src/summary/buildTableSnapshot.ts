@@ -18,10 +18,6 @@ export function buildTableSnapshot(params: {
   balls: PhysicsBall[]
   getPosition: (id: string) => Position2D | null
 }): TableSnapshot {
-  const rulesState = params.rulesState as RulesState & {
-    aiScore?: number
-    currentActor?: ShotActor
-  }
   const balls = params.balls.map((ball) => {
     const pos = params.getPosition(ball.id)
     return {
@@ -37,13 +33,13 @@ export function buildTableSnapshot(params: {
     shotIndex: params.shotIndex,
     mode: params.mode,
     actor: params.actor,
-    currentActor: rulesState.currentActor,
+    currentActor: params.rulesState.currentActor,
     phase: params.rulesState.phase,
     ballOn: params.rulesState.ballOn,
     redsRemaining: params.rulesState.redsRemaining,
     score: {
       player: params.rulesState.playerScore,
-      ai: rulesState.aiScore,
+      ai: params.rulesState.aiScore,
     },
     breakScore: params.rulesState.breakScore,
     balls,

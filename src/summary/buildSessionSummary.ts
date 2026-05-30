@@ -26,6 +26,10 @@ export function buildSessionSummary(mode: SummaryMode, shots: ShotSummary[]): Se
     mode,
     shotCount: shots.length,
     totalScore,
+    score: {
+      player: lastShot?.after.playerScore ?? 0,
+      ai: lastShot?.after.aiScore ?? 0,
+    },
     highestBreak,
     foulCount,
     potCount,

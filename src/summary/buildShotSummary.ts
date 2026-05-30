@@ -15,6 +15,15 @@ const BALL_POINTS: Record<BallColor, number> = {
   black: 7,
 }
 
+function isColorBallId(id: string): id is Exclude<BallColor, 'white' | 'red'> {
+  return id === 'yellow'
+    || id === 'green'
+    || id === 'brown'
+    || id === 'blue'
+    || id === 'pink'
+    || id === 'black'
+}
+
 function toBallKind(id: string): BallColor {
   if (id.startsWith('red_') || id === 'red') return 'red'
   if (id === 'white') return 'white'
@@ -27,17 +36,6 @@ function didHitLegalFirstTarget(firstContactBallId: string | null, before: Table
   if (before.ballOn === 'red') return firstKind === 'red'
   if (before.ballOn === 'color') return firstKind !== 'red' && firstKind !== 'white'
   return firstKind === before.ballOn
-}
-
-function inferNextShotChance(params: {
-  foul: ShotResult['foul']
-  scoredPoints: number
-  hitLegalFirstTarget: boolean
-}): ShotSummary['nextShotChance'] {
-  if (params.foul) return 'none'
-  if (params.scoredPoints > 0) return 'created'
-  if (params.hitLegalFirstTarget) return 'limited'
-  return 'none'
 }
 
 function inferCueBallPositionResult(nextShotChance: ShotSummary['nextShotChance']): ShotSummary['cueBallPositionResult'] {
@@ -129,6 +127,7 @@ function classifyPotChance(snapshot: TableSnapshot): {
 }
 
 function inferNextShotChanceFromTable(params: {
+  mode: TableSnapshot['mode']
   foul: FoulInfo | null
   afterState: RulesState
   cueBallEndPosition: Position2D | null
@@ -138,13 +137,15 @@ function inferNextShotChanceFromTable(params: {
 
   const afterSnapshot: TableSnapshot = {
     shotIndex: 0,
-    mode: 'practice',
-    actor: 'player',
+    mode: params.mode,
+    actor: params.afterState.currentActor,
+    currentActor: params.afterState.currentActor,
     phase: params.afterState.phase,
     ballOn: params.afterState.ballOn,
     redsRemaining: params.afterState.redsRemaining,
     score: {
       player: params.afterState.playerScore,
+      ai: params.afterState.aiScore,
     },
     breakScore: params.afterState.breakScore,
     balls: params.afterBalls.map((ball) => ball.id === 'white'
@@ -208,6 +209,7 @@ export function buildShotSummary(params: {
   const simplePotMiss: boolean | 'unknown' = simplePotChance
     ? nonWhitePottedBalls.length === 0
     : false
+  const respottedColorIds = new Set(params.result.respottedColorIds)
   const afterBalls = params.before.balls
     .map((ball) => {
       const pottedMatch = params.pottedBallIds.includes(ball.id)
@@ -219,9 +221,13 @@ export function buildShotSummary(params: {
           potted: params.pottedBallIds.includes('white'),
         }
       }
+      if (isColorBallId(ball.id) && respottedColorIds.has(ball.id)) {
+        return { ...ball, potted: false }
+      }
       return pottedMatch ? { ...ball, potted: true } : ball
     })
   const nextShotChance = inferNextShotChanceFromTable({
+    mode: params.before.mode,
     foul: params.result.foul,
     afterState: params.afterState,
     cueBallEndPosition: params.cueBallEndPosition,
@@ -231,22 +237,6 @@ export function buildShotSummary(params: {
     foul: params.result.foul,
     cueBallEndPosition: params.cueBallEndPosition,
     nextShotChance,
-  })
-  const resultWithContract = params.result as ShotResult & {
-    turnChanged?: boolean
-  }
-  const foulWithContract = params.result.foul as (FoulInfo & {
-    beneficiary?: ShotSummary['foulBeneficiary']
-    ballOnAtFoul?: BallOnIndicator
-  }) | null
-  const afterStateWithContract = params.afterState as RulesState & {
-    aiScore?: number
-    currentActor?: ShotSummary['actor']
-  }
-  const fallbackNextShotChance = inferNextShotChance({
-    foul: params.result.foul,
-    scoredPoints: params.result.scored,
-    hitLegalFirstTarget,
   })
 
   return {
@@ -261,18 +251,16 @@ export function buildShotSummary(params: {
     pottedBalls,
     scoredPoints: params.result.scored,
     foul: params.result.foul,
-    foulBeneficiary: foulWithContract?.beneficiary ?? (params.before.mode === 'practice' ? 'none' : undefined),
-    foulBallOn: foulWithContract?.ballOnAtFoul ?? (params.result.foul ? params.before.ballOn : undefined),
+    foulBeneficiary: params.result.foul?.beneficiary,
+    foulBallOn: params.result.foul?.ballOnAtFoul,
     outcome: params.result.foul ? 'foul' : params.result.scored > 0 ? 'score' : 'miss',
     simplePotChance,
     simplePotMiss,
     cueBallPositionResult,
-    nextShotChance: nextShotChance === 'unknown' ? fallbackNextShotChance : nextShotChance,
-    turnChanged: resultWithContract.turnChanged,
+    nextShotChance,
+    turnChanged: params.result.turnChanged,
     after: {
       ...params.afterState,
-      aiScore: afterStateWithContract.aiScore,
-      currentActor: afterStateWithContract.currentActor,
       cueBallEndPosition: params.cueBallEndPosition,
     },
   }

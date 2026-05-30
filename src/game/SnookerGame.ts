@@ -1,11 +1,11 @@
 import { createOpeningBalls } from '@/game/ballLayout'
 import { PlanePhysics, type CueAddress, type ShotBlockReason } from '@/physics/PlanePhysics'
 import { SnookerRenderer } from '@/render/SnookerRenderer'
-import { SnookerRules, type FoulInfo, type RulesState } from '@/rules/SnookerRules'
+import { SnookerRules, type FoulInfo, type RulesState, type ShotResult } from '@/rules/SnookerRules'
 import { buildSessionSummary } from '@/summary/buildSessionSummary'
 import { buildShotSummary } from '@/summary/buildShotSummary'
 import { buildTableSnapshot } from '@/summary/buildTableSnapshot'
-import type { SessionSummary, ShotActor, ShotSummary, SummaryMode, TableSnapshot } from '@/summary/types'
+import type { SessionSummary, ShotSummary, SummaryMode, TableSnapshot } from '@/summary/types'
 import { D_RADIUS, SPOTS, BALL_RADIUS } from '@/constants/table'
 import type { Position2D } from '@/types/coords'
 
@@ -55,8 +55,7 @@ export class SnookerGame {
   private aimAngleDirty = true
   private power = 0.35
   private readonly cueBallId = 'white'
-  private readonly mode: SummaryMode = 'practice'
-  private readonly actor: ShotActor = 'player'
+  private mode: SummaryMode = 'practice'
   private shotIndex = 0
   private currentShotSnapshot: TableSnapshot | null = null
   private shotSummaries: ShotSummary[] = []
@@ -140,6 +139,11 @@ export class SnookerGame {
     if (enabled && this.phase === 'general') {
       this.enterBallInHand()
     }
+  }
+
+  setMode(mode: SummaryMode): void {
+    this.mode = mode
+    this.restart()
   }
 
   private resetBalls(): void {
@@ -368,7 +372,7 @@ export class SnookerGame {
     this.currentShotSnapshot = buildTableSnapshot({
       shotIndex: this.shotIndex,
       mode: this.mode,
-      actor: this.actor,
+      actor: this.rules.getState().currentActor,
       rulesState: this.rules.getState(),
       balls: this.physics.getAllBalls(),
       getPosition: (id) => this.physics.getPosition(id),
@@ -605,6 +609,11 @@ export class SnookerGame {
     return FRONT_PAUSE_CUE_OFFSET_MM
   }
 
+  private shouldEnterBallInHand(result: ShotResult): boolean {
+    return result.foul?.type === 'whitePotted'
+      || this.shotPottedIds.includes(this.cueBallId)
+  }
+
   private loop = (time: number): void => {
     this.raf = requestAnimationFrame(this.loop)
     const dt = Math.min((time - this.lastTime) / 1000, 0.05)
@@ -629,6 +638,9 @@ export class SnookerGame {
       this.postShotEndTime = -1
       const firstContact = this.physics.getFirstContact()
       const result = this.rules.processShot(firstContact, this.shotPottedIds, this.mode)
+      for (const id of result.respottedColorIds) {
+        this.physics.respotBall(id, SPOTS[id])
+      }
       const afterState = this.rules.getState()
       if (this.currentShotSnapshot) {
         const shotSummary = buildShotSummary({
@@ -648,7 +660,7 @@ export class SnookerGame {
       this.currentShotSnapshot = null
       this.pendingStandTarget = undefined
       // White potted → ball in hand
-      if (this.shotPottedIds.includes(this.cueBallId)) {
+      if (this.shouldEnterBallInHand(result)) {
         this.enterBallInHand()
       } else {
         this.setPhase('general')

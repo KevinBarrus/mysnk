@@ -24,10 +24,10 @@ import {
   buildTableRenderModel,
 } from '@/table/buildTableModels'
 
-const MIDDLE_POCKET_HALF_GAP = 50                // mm — cushion gap half-width at middle pocket
-const CORNER_JAW_OFFSET = POCKET_RADIUS * 0.7    // 59.5 mm — diagonal opening ≈84 mm (standard ~85 mm)
-const MIDDLE_JAW_OFFSET = 43                     // mm — total opening 86 mm (standard snooker)
-const POCKET_ENTRY_DEPTH = 52.5 / 2 * 1.2
+const MIDDLE_POCKET_HALF_GAP = 78
+const CORNER_JAW_OFFSET = 100
+const MIDDLE_JAW_OFFSET = 72
+const POCKET_ENTRY_DEPTH = 42
 
 function makeCushions(): CushionSegment[] {
   return [

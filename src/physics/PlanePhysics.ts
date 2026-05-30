@@ -150,6 +150,10 @@ export class PlanePhysics {
   }
 
   placeCueBall(id: string, position: Position2D): void {
+    this.respotBall(id, position)
+  }
+
+  respotBall(id: string, position: Position2D): void {
     const ball = this.balls.get(id)
     if (!ball) return
 

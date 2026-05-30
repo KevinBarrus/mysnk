@@ -31,8 +31,7 @@ const CUE_POST_SHOT_LOOK_LIFT_MM = 40
 const FRAME_INNER_CORNER_CUT_MM = 128
 const FRAME_INNER_MIDDLE_HALF_MM = 88
 const FELT_POCKET_CUT_MARGIN_MM = 26
-const POCKET_CUSHION_FLARE_MM = 26
-const POCKET_CUSHION_COVER_MM = 16
+const VISUAL_CUSHION_HEIGHT_MM = 44
 function mm(v: number): number {
   return v * MM_TO_SCENE
 }
@@ -200,7 +199,7 @@ export class SnookerRenderer {
   }
 
   private buildTable(): void {
-    const ch = mm(pcolTableRenderModel.cushions[0]?.height ?? pcolTableSpec.visuals.cushionHeight)
+    const ch = mm(Math.min(VISUAL_CUSHION_HEIGHT_MM, BALL_RADIUS * 2))
 
     const feltMat = new THREE.MeshStandardMaterial({
       color: pcolTableSpec.visuals.clothColor,
@@ -355,84 +354,17 @@ export class SnookerRenderer {
   }
 
   private buildCushionGapFillers(material: THREE.Material): void {
-    const topY = 0.003
-    const sideLift = mm(1.4)
-    for (const cushion of pcolTableRenderModel.cushions) {
-      for (const segment of cushion.segments) {
-        const mesh = this.createGapFillerMesh(cushion.side, segment, material)
-        mesh.position.y = topY + sideLift
-        mesh.receiveShadow = true
-        this.tableGroup.add(mesh)
-      }
-    }
-  }
-
-  private createGapFillerMesh(
-    side: 'top' | 'bottom' | 'left' | 'right',
-    segment: { start: Position2D; end: Position2D },
-    material: THREE.Material,
-  ): THREE.Mesh {
-    const shape = this.buildGapFillerShape(side, segment)
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      depth: mm(10),
-      bevelEnabled: false,
-    })
-    geo.rotateX(-Math.PI / 2)
-    return new THREE.Mesh(geo, material)
-  }
-
-  private buildGapFillerShape(
-    side: 'top' | 'bottom' | 'left' | 'right',
-    segment: { start: Position2D; end: Position2D },
-  ): THREE.Shape {
-    const axis = side === 'left' || side === 'right' ? 'y' : 'x'
-    const normalSign = side === 'left' || side === 'top' ? -1 : 1
-    const start = segment.start[axis]
-    const end = segment.end[axis]
-    const min = Math.min(start, end)
-    const max = Math.max(start, end)
-    const inner = side === 'left' || side === 'right'
-      ? segment.start.x
-      : segment.start.y
-    const outer = inner + normalSign * POCKET_CUSHION_COVER_MM
-    const pocketFlare = POCKET_CUSHION_FLARE_MM
-    const shape = new THREE.Shape()
-
-    if (axis === 'x') {
-      shape.moveTo(mm(min), mm(inner))
-      shape.lineTo(mm(max), mm(inner))
-      shape.lineTo(mm(max + pocketFlare), mm(outer))
-      shape.lineTo(mm(min - pocketFlare), mm(outer))
-    } else {
-      shape.moveTo(mm(inner), mm(min))
-      shape.lineTo(mm(inner), mm(max))
-      shape.lineTo(mm(outer), mm(max + pocketFlare))
-      shape.lineTo(mm(outer), mm(min - pocketFlare))
-    }
-
-    shape.closePath()
-    return shape
+    void material
   }
 
   private createCushionBodyMesh(
     side: 'top' | 'bottom' | 'left' | 'right',
     segment: { start: Position2D; end: Position2D },
-    visibleWidthMm: number,
+    _visibleWidthMm: number,
     height: number,
     material: THREE.Material,
   ): THREE.Mesh {
-    const shape = this.buildCushionProfileShape(side, segment, visibleWidthMm, 0, 0)
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      depth: height,
-      bevelEnabled: true,
-      bevelThickness: mm(1.2),
-      bevelSize: mm(1),
-      bevelSegments: 2,
-    })
-    geo.rotateX(-Math.PI / 2)
-    const mesh = new THREE.Mesh(geo, material)
-    mesh.position.y = height
-    return mesh
+    return this.createStraightCushionMesh(side, segment, CUSHION_WIDTH, height, material)
   }
 
   private createCushionTrimMesh(
@@ -444,63 +376,42 @@ export class SnookerRenderer {
     trimHeight: number,
     material: THREE.Material,
   ): THREE.Mesh {
-    const shape = this.buildCushionProfileShape(
+    return this.createStraightCushionMesh(
       side,
       segment,
       trimWidth / MM_TO_SCENE,
-      0,
-      0,
+      trimHeight,
+      material,
+      cushionHeight + trimHeight,
     )
-    const geo = new THREE.ExtrudeGeometry(shape, {
-      depth: trimHeight,
-      bevelEnabled: false,
-    })
-    geo.rotateX(-Math.PI / 2)
-    const mesh = new THREE.Mesh(geo, material)
-    mesh.position.y = cushionHeight + trimHeight
-    return mesh
   }
 
-  private buildCushionProfileShape(
+  private createStraightCushionMesh(
     side: 'top' | 'bottom' | 'left' | 'right',
     segment: { start: Position2D; end: Position2D },
-    visibleWidthMm: number,
-    taperStartMm: number,
-    taperEndMm: number,
-  ): THREE.Shape {
-    const axis = side === 'left' || side === 'right' ? 'y' : 'x'
-    const normalSign = side === 'left' || side === 'top' ? -1 : 1
-    const start = segment.start[axis]
-    const end = segment.end[axis]
-    const min = Math.min(start, end)
-    const max = Math.max(start, end)
-    const inner = side === 'left' || side === 'right'
-      ? segment.start.x
-      : segment.start.y
-    const outer = inner + normalSign * visibleWidthMm
+    widthMm: number,
+    height: number,
+    material: THREE.Material,
+    topY: number = height,
+  ): THREE.Mesh {
+    const alongX = side === 'top' || side === 'bottom'
+    const lengthMm = alongX
+      ? Math.abs(segment.end.x - segment.start.x)
+      : Math.abs(segment.end.y - segment.start.y)
+    const geometry = alongX
+      ? new THREE.BoxGeometry(mm(lengthMm), height, mm(widthMm))
+      : new THREE.BoxGeometry(mm(widthMm), height, mm(lengthMm))
+    const mesh = new THREE.Mesh(geometry, material)
+    const centerX = alongX ? (segment.start.x + segment.end.x) / 2 : segment.start.x
+    const centerZ = alongX ? segment.start.y : (segment.start.y + segment.end.y) / 2
+    const outwardSign = side === 'top' || side === 'right' ? 1 : -1
 
-    const shape = new THREE.Shape()
-    const pocketCut = 18
-    const pocketFlare = POCKET_CUSHION_FLARE_MM
-
-    if (axis === 'x') {
-      const cutStart = min + taperStartMm + pocketCut
-      const cutEnd = max - taperEndMm - pocketCut
-      shape.moveTo(mm(cutStart), mm(inner))
-      shape.lineTo(mm(cutEnd), mm(inner))
-      shape.lineTo(mm(max + pocketFlare), mm(outer))
-      shape.lineTo(mm(min - pocketFlare), mm(outer))
-    } else {
-      const cutStart = min + taperStartMm + pocketCut
-      const cutEnd = max - taperEndMm - pocketCut
-      shape.moveTo(mm(inner), mm(cutStart))
-      shape.lineTo(mm(inner), mm(cutEnd))
-      shape.lineTo(mm(outer), mm(max + pocketFlare))
-      shape.lineTo(mm(outer), mm(min - pocketFlare))
-    }
-
-    shape.closePath()
-    return shape
+    mesh.position.set(
+      mm(centerX + (alongX ? 0 : outwardSign * widthMm / 2)),
+      topY,
+      mm(centerZ + (alongX ? outwardSign * widthMm / 2 : 0)),
+    )
+    return mesh
   }
 
   private buildPockets(): void {

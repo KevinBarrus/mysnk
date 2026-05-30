@@ -13,6 +13,8 @@ export interface FoulInfo {
   type: FoulType
   penalty: number
   message: string
+  beneficiary: 'player' | 'ai' | 'none'
+  ballOnAtFoul: BallOnIndicator
 }
 
 export interface ShotResult {
@@ -20,14 +22,18 @@ export interface ShotResult {
   foul: FoulInfo | null
   ballOn: BallOnIndicator
   redsRemaining: number
+  turnChanged: boolean
+  respottedColorIds: ColorBall[]
 }
 
 export interface RulesState {
   playerScore: number
+  aiScore: number
   breakScore: number
   ballOn: BallOnIndicator
   redsRemaining: number
   phase: 'reds' | 'clearance'
+  currentActor: 'player' | 'ai'
 }
 
 export type GameMode = 'practice' | 'match'
@@ -50,7 +56,9 @@ export class SnookerRules {
   private clearanceIndex = 0
   private phase: 'reds' | 'clearance' = 'reds'
   private playerScore = 0
+  private aiScore = 0
   private breakScore = 0
+  private currentActor: 'player' | 'ai' = 'player'
 
   getBallOn(): BallOnIndicator {
     if (this.phase === 'clearance') {
@@ -62,10 +70,12 @@ export class SnookerRules {
   getState(): RulesState {
     return {
       playerScore: this.playerScore,
+      aiScore: this.aiScore,
       breakScore: this.breakScore,
       ballOn: this.getBallOn(),
       redsRemaining: this.redsRemaining,
       phase: this.phase,
+      currentActor: this.currentActor,
     }
   }
 
@@ -78,21 +88,27 @@ export class SnookerRules {
   processShot(
     firstContact: string | null,
     potted: string[],
-    _mode: GameMode = 'practice',
+    mode: GameMode = 'practice',
   ): ShotResult {
+    const phaseBeforeShot = this.phase
     const whitePotted = potted.includes('white')
     const nonWhitePotted = potted.filter((id) => id !== 'white')
 
-    const foul = this.detectFoul(firstContact, potted, whitePotted)
+    const foul = this.detectFoul(firstContact, potted, whitePotted, mode)
 
     if (foul) {
       this.breakScore = 0
-      // 在 match 模式下，调用方可读取 foul.penalty 给对方加分
+      if (mode === 'match' && foul.beneficiary !== 'none') {
+        this.addScore(foul.beneficiary, foul.penalty)
+      }
+      const turnChanged = this.completeTurn(mode)
       return {
         scored: 0,
         foul,
         ballOn: this.getBallOn(),
         redsRemaining: this.redsRemaining,
+        turnChanged,
+        respottedColorIds: [],
       }
     }
 
@@ -104,12 +120,14 @@ export class SnookerRules {
       this.applyPot(id)
     }
 
-    this.playerScore += scored
+    this.addScore(this.currentActor, scored)
     this.breakScore += scored
 
     // 若本杆没进球，单杆结束
+    let turnChanged = false
     if (scored === 0) {
       this.breakScore = 0
+      turnChanged = this.completeTurn(mode)
     }
 
     // 推进阶段
@@ -120,6 +138,8 @@ export class SnookerRules {
       foul: null,
       ballOn: this.getBallOn(),
       redsRemaining: this.redsRemaining,
+      turnChanged,
+      respottedColorIds: this.collectRespottedColors(phaseBeforeShot, nonWhitePotted),
     }
   }
 
@@ -129,7 +149,9 @@ export class SnookerRules {
     this.clearanceIndex = 0
     this.phase = 'reds'
     this.playerScore = 0
+    this.aiScore = 0
     this.breakScore = 0
+    this.currentActor = 'player'
   }
 
   // ── private ──────────────────────────────────────────────
@@ -138,14 +160,19 @@ export class SnookerRules {
     firstContact: string | null,
     potted: string[],
     whitePotted: boolean,
+    mode: GameMode,
   ): FoulInfo | null {
     const penaltyBase = this.getBallOnValue()
+    const ballOnAtFoul = this.getBallOn()
+    const beneficiary = this.getFoulBeneficiary(mode)
 
     if (whitePotted) {
       return {
         type: 'whitePotted',
         penalty: Math.max(4, penaltyBase),
         message: 'Cue ball potted',
+        beneficiary,
+        ballOnAtFoul,
       }
     }
 
@@ -154,6 +181,8 @@ export class SnookerRules {
         type: 'noBallHit',
         penalty: Math.max(4, penaltyBase),
         message: 'No ball contacted',
+        beneficiary,
+        ballOnAtFoul,
       }
     }
 
@@ -165,6 +194,8 @@ export class SnookerRules {
             type: 'wrongBallFirst',
             penalty: Math.max(4, BALL_VALUE[firstContact] ?? 4),
             message: 'Must hit a red ball first',
+            beneficiary,
+            ballOnAtFoul,
           }
         }
         // 进了彩球（非红球）
@@ -177,6 +208,8 @@ export class SnookerRules {
             type: 'colorPottedOnRed',
             penalty: Math.max(4, maxVal),
             message: 'Cannot pot a colour when red is on',
+            beneficiary,
+            ballOnAtFoul,
           }
         }
       } else {
@@ -186,6 +219,8 @@ export class SnookerRules {
             type: 'wrongBallFirst',
             penalty: Math.max(4, penaltyBase),
             message: 'Must hit a colour ball first',
+            beneficiary,
+            ballOnAtFoul,
           }
         }
       }
@@ -197,6 +232,8 @@ export class SnookerRules {
           type: 'wrongBallFirst',
           penalty: Math.max(4, BALL_VALUE[target] ?? 4),
           message: `Must hit the ${target} ball first`,
+          beneficiary,
+          ballOnAtFoul,
         }
       }
     }
@@ -208,7 +245,7 @@ export class SnookerRules {
     if (id.startsWith('red_') || id === 'red') {
       this.redsRemaining = Math.max(0, this.redsRemaining - 1)
     }
-    // 彩球在清彩阶段进袋后不复位（物理层已处理），reds 阶段彩球由物理层 respawn（暂未实现，规则层不管）
+    // 彩球在清彩阶段进袋后不复位；reds 阶段是否复位由 processShot 的结构化结果决定。
   }
 
   private advancePhase(pottedNonWhite: string[]): void {
@@ -257,5 +294,42 @@ export class SnookerRules {
     if (ballOn === 'red') return 1
     if (ballOn === 'color') return 1 // 接彩球时最低罚分由 max(4,...) 保证
     return BALL_VALUE[ballOn] ?? 1
+  }
+
+  private addScore(actor: 'player' | 'ai', points: number): void {
+    if (points <= 0) return
+    if (actor === 'player') {
+      this.playerScore += points
+      return
+    }
+    this.aiScore += points
+  }
+
+  private getOpponent(actor: 'player' | 'ai'): 'player' | 'ai' {
+    return actor === 'player' ? 'ai' : 'player'
+  }
+
+  private getFoulBeneficiary(mode: GameMode): 'player' | 'ai' | 'none' {
+    if (mode !== 'match') return 'none'
+    return this.getOpponent(this.currentActor)
+  }
+
+  private completeTurn(mode: GameMode): boolean {
+    if (mode !== 'match') return false
+    this.currentActor = this.getOpponent(this.currentActor)
+    return true
+  }
+
+  private collectRespottedColors(
+    phaseBeforeShot: 'reds' | 'clearance',
+    pottedNonWhite: string[],
+  ): ColorBall[] {
+    if (phaseBeforeShot !== 'reds') return []
+
+    return pottedNonWhite.filter((id): id is ColorBall => (
+      !id.startsWith('red_')
+      && id !== 'red'
+      && id in BALL_VALUE
+    ))
   }
 }
