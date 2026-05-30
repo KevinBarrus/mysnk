@@ -10,7 +10,9 @@
       "Bash(python3 *)",
       "Bash(convert ExampleImage/对比/球杆/my.png -resize 800x ExampleImage/对比/球杆/my_small.jpg)",
       "Bash(curl -s http://localhost:5173)",
-      "Bash(kill 1586643)"
+      "Bash(kill 1586643)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(npm run *)"
     ]
   }
 }

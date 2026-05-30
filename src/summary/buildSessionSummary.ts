@@ -19,7 +19,8 @@ export function buildSessionSummary(mode: SummaryMode, shots: ShotSummary[]): Se
     if (shot.nextShotChance === 'created') nextChanceCreatedCount++
   }
 
-  const totalScore = shots.at(-1)?.after.playerScore ?? 0
+  const lastShot = shots.length > 0 ? shots[shots.length - 1] : null
+  const totalScore = lastShot?.after.playerScore ?? 0
 
   return {
     mode,

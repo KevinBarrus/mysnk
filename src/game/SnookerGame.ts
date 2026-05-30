@@ -6,9 +6,12 @@ import { buildSessionSummary } from '@/summary/buildSessionSummary'
 import { buildShotSummary } from '@/summary/buildShotSummary'
 import { buildTableSnapshot } from '@/summary/buildTableSnapshot'
 import type { SessionSummary, ShotActor, ShotSummary, SummaryMode, TableSnapshot } from '@/summary/types'
+import { D_RADIUS, SPOTS, BALL_RADIUS } from '@/constants/table'
 import type { Position2D } from '@/types/coords'
 
-export type GamePhase = 'general' | 'aiming' | 'simulating' | 'ended'
+const BAULK_Y = SPOTS.baulk.y
+
+export type GamePhase = 'general' | 'aiming' | 'simulating' | 'ballInHand' | 'ended'
 type CueStrokePhase = 'idle' | 'frontPause' | 'backswing' | 'forward' | 'followThroughHold' | 'postShot'
 
 interface CueStrokeState {
@@ -89,6 +92,7 @@ export class SnookerGame {
   private onShotBlocked?: (message: string | null) => void
   private onScoreUpdate?: (state: RulesState) => void
   private onFoul?: (foul: FoulInfo | null) => void
+  private onBallInHand?: () => void
   private onTableSnapshot?: (snapshot: TableSnapshot) => void
   private onShotSummary?: (summary: ShotSummary) => void
   private onSessionSummary?: (summary: SessionSummary) => void
@@ -106,6 +110,7 @@ export class SnookerGame {
     onShotBlocked?: (message: string | null) => void
     onScoreUpdate?: (state: RulesState) => void
     onFoul?: (foul: FoulInfo | null) => void
+    onBallInHand?: () => void
     onTableSnapshot?: (snapshot: TableSnapshot) => void
     onShotSummary?: (summary: ShotSummary) => void
     onSessionSummary?: (summary: SessionSummary) => void
@@ -115,6 +120,7 @@ export class SnookerGame {
     this.onShotBlocked = cb.onShotBlocked
     this.onScoreUpdate = cb.onScoreUpdate
     this.onFoul = cb.onFoul
+    this.onBallInHand = cb.onBallInHand
     this.onTableSnapshot = cb.onTableSnapshot
     this.onShotSummary = cb.onShotSummary
     this.onSessionSummary = cb.onSessionSummary
@@ -128,6 +134,11 @@ export class SnookerGame {
 
     if (!enabled && this.phase === 'aiming') {
       this.exitAimMode()
+    }
+
+    // On first enable, enter ball-in-hand so player places the cue ball
+    if (enabled && this.phase === 'general') {
+      this.enterBallInHand()
     }
   }
 
@@ -149,12 +160,20 @@ export class SnookerGame {
     // --- Drag: yaw/pitch in general, aim in aiming ---
     container.addEventListener('mousedown', (e) => {
       if (!this.inputEnabled) return
+      if (this.phase === 'ballInHand') {
+        this.handleBallInHandClick(e.clientX, e.clientY)
+        return
+      }
       this.isDragging = true
       this.dragLastX = e.clientX
       this.dragLastY = e.clientY
     })
 
     window.addEventListener('mousemove', (e) => {
+      if (this.phase === 'ballInHand') {
+        this.handleBallInHandMove(e.clientX, e.clientY)
+        return
+      }
       if (!this.isDragging) return
       const dx = e.clientX - this.dragLastX
       const dy = e.clientY - this.dragLastY
@@ -223,6 +242,42 @@ export class SnookerGame {
       if (!this.inputEnabled) return
       this.keys.delete(e.code)
     })
+  }
+
+  private isInDZone(pos: Position2D): boolean {
+    const dx = pos.x
+    const dy = pos.y - BAULK_Y
+    return dy >= 0 && Math.hypot(dx, dy) <= D_RADIUS - BALL_RADIUS
+  }
+
+  private enterBallInHand(): void {
+    this.setPhase('ballInHand')
+    this.onBallInHand?.()
+  }
+
+  /** Called on mousemove during ballInHand phase. Updates the placement ring. */
+  handleBallInHandMove(clientX: number, clientY: number): void {
+    if (this.phase !== 'ballInHand') return
+    const pos = this.renderer.raycastTablePoint(clientX, clientY)
+    if (!pos) {
+      this.renderer.updateBallInHandRing(null, false)
+      return
+    }
+    const valid = this.isInDZone(pos)
+    this.renderer.updateBallInHandRing(pos, valid)
+  }
+
+  /** Called on mousedown during ballInHand phase. Places cue ball if valid. */
+  handleBallInHandClick(clientX: number, clientY: number): void {
+    if (this.phase !== 'ballInHand') return
+    const pos = this.renderer.raycastTablePoint(clientX, clientY)
+    if (!pos || !this.isInDZone(pos)) return
+
+    this.renderer.hideBallInHandRing()
+    this.physics.placeCueBall(this.cueBallId, pos)
+    this.renderer.syncBall(this.cueBallId, 'white', pos, false)
+    this.aimAngleDirty = true
+    this.setPhase('general')
   }
 
   private enterAimMode(): void {
@@ -591,8 +646,13 @@ export class SnookerGame {
       this.onScoreUpdate?.(afterState)
       this.onFoul?.(result.foul)
       this.currentShotSnapshot = null
-      this.setPhase('general')
       this.pendingStandTarget = undefined
+      // White potted → ball in hand
+      if (this.shotPottedIds.includes(this.cueBallId)) {
+        this.enterBallInHand()
+      } else {
+        this.setPhase('general')
+      }
     }
 
     // General-mode keyboard orbit: A/D orbit around the table

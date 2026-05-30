@@ -149,6 +149,19 @@ export class PlanePhysics {
     this.balls.delete(id)
   }
 
+  placeCueBall(id: string, position: Position2D): void {
+    const ball = this.balls.get(id)
+    if (!ball) return
+
+    ball.potted = false
+    ball.body.position.copy(tableToWorld(position))
+    ball.body.velocity.setZero()
+    ball.body.angularVelocity.setZero()
+    ball.body.force.setZero()
+    ball.body.torque.setZero()
+    ball.body.wakeUp()
+  }
+
   evaluateCueAddress(id: string, direction: Position2D): CueAddress {
     const ball = this.balls.get(id)
     if (!ball) {

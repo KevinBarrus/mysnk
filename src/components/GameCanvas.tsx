@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { SnookerGame, type GamePhase } from '@/game/SnookerGame'
 import { Scoreboard } from '@/components/Scoreboard'
+import {
+  CAREER_RANKING,
+  DEV_PLAYER_PROFILE,
+  NEXT_CHALLENGER,
+} from '@/data/careerRanking'
 import type { FoulInfo, RulesState } from '@/rules/SnookerRules'
 import type { SessionSummary, ShotSummary, TableSnapshot } from '@/summary/types'
 
 type AppView = 'guest' | 'menu' | 'practise'
-
-const DEV_USER = {
-  username: 'admin',
-  prizeMoney: 1000,
-  worldRanking: 16,
-} as const
 
 const MENU_BUTTON_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
 const HUD_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
@@ -28,6 +27,10 @@ const INITIAL_RULES_STATE: RulesState = {
   ballOn: 'red',
   redsRemaining: 15,
   phase: 'reds',
+}
+
+function formatPrizeMoney(value: number): string {
+  return `${value.toLocaleString('en-GB')} £`
 }
 
 interface MenuButtonProps {
@@ -69,6 +72,7 @@ export function GameCanvas() {
   const [view, setView] = useState<AppView>('guest')
   const [phase, setPhase] = useState<GamePhase>('general')
   const [showCareer, setShowCareer] = useState(false)
+  const [showRanking, setShowRanking] = useState(false)
   const [showMenuIdentity, setShowMenuIdentity] = useState(false)
   const [power, setPower] = useState(0.35)
   const [lastPotted, setLastPotted] = useState<string[]>([])
@@ -148,12 +152,14 @@ export function GameCanvas() {
 
   const enterMenu = (): void => {
     setShowCareer(false)
+    setShowRanking(false)
     setShowMenuIdentity(true)
     setView('menu')
   }
 
   const handleBeatAi = (): void => {
     setShowCareer(false)
+    setShowRanking(false)
     setShowMenuIdentity(false)
   }
 
@@ -163,6 +169,7 @@ export function GameCanvas() {
     setFoulInfo(null)
     setRulesState(INITIAL_RULES_STATE)
     setShowCareer(false)
+    setShowRanking(false)
     setShowMenuIdentity(false)
     setView('practise')
   }
@@ -189,7 +196,13 @@ export function GameCanvas() {
             <>
               <MenuButton label="Beat AI" onClick={handleBeatAi} />
               <MenuButton label="Practise" onClick={startPractise} />
-              <MenuButton label="Career" onClick={() => setShowCareer((current) => !current)} />
+              <MenuButton
+                label="Career"
+                onClick={() => {
+                  setShowRanking(false)
+                  setShowCareer((current) => !current)
+                }}
+              />
             </>
           )}
         </div>
@@ -197,7 +210,7 @@ export function GameCanvas() {
 
       {view === 'menu' && showMenuIdentity && (
         <div className="pointer-events-none absolute right-6 top-5 z-20 flex items-center gap-6 text-sm uppercase tracking-[0.18em] text-[#f1ede4]">
-          <span>Player: {DEV_USER.username}</span>
+          <span>Player: {DEV_PLAYER_PROFILE.username}</span>
         </div>
       )}
 
@@ -206,7 +219,10 @@ export function GameCanvas() {
           <div className="relative min-w-[520px] bg-black px-10 py-8 text-[#f2f0ea] shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
             <button
               type="button"
-              onClick={() => setShowCareer(false)}
+              onClick={() => {
+                setShowRanking(false)
+                setShowCareer(false)
+              }}
               aria-label="Close career panel"
               className="absolute right-4 top-3 text-[30px] leading-none text-[#f2f0ea] transition hover:text-[#d9b86d] focus:outline-none"
               style={{
@@ -226,7 +242,7 @@ export function GameCanvas() {
                 letterSpacing: '-0.03em',
               }}
             >
-              My Prize Money: {DEV_USER.prizeMoney} £
+              My Prize Money: {formatPrizeMoney(DEV_PLAYER_PROFILE.prizeMoney)}
             </p>
             <p
               className="mt-5 text-[30px] leading-none font-semibold uppercase text-[#d9b86d]"
@@ -238,8 +254,92 @@ export function GameCanvas() {
                 letterSpacing: '-0.025em',
               }}
             >
-              World Ranking Now: {DEV_USER.worldRanking}
+              World Ranking Now: {DEV_PLAYER_PROFILE.worldRanking}
             </p>
+            <p
+              className="mt-5 text-[30px] leading-none font-semibold uppercase text-[#f2f0ea]"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+                transform: 'scaleX(0.88)',
+                transformOrigin: 'left center',
+                letterSpacing: '-0.025em',
+              }}
+            >
+              Next Challenger: {NEXT_CHALLENGER ? `#${NEXT_CHALLENGER.rank} ${NEXT_CHALLENGER.displayName}` : 'N/A'}
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowRanking(true)}
+              className="mt-10 bg-[#d9b86d] px-6 py-3 text-[24px] font-semibold uppercase text-black transition hover:bg-[#ebca82] focus:outline-none"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+                transform: 'scaleX(0.88)',
+                transformOrigin: 'left center',
+                letterSpacing: '-0.02em',
+              }}
+            >
+              Ranking
+            </button>
+          </div>
+        </div>
+      )}
+
+      {view === 'menu' && showCareer && showRanking && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/28">
+          <div className="relative max-h-[78vh] min-w-[860px] overflow-hidden bg-black px-8 py-7 text-[#f2f0ea] shadow-[0_12px_40px_rgba(0,0,0,0.65)]">
+            <button
+              type="button"
+              onClick={() => setShowRanking(false)}
+              aria-label="Close ranking panel"
+              className="absolute right-4 top-3 text-[30px] leading-none text-[#f2f0ea] transition hover:text-[#d9b86d] focus:outline-none"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+              }}
+            >
+              ×
+            </button>
+            <p
+              className="mb-6 text-[34px] leading-none font-semibold uppercase"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+                transform: 'scaleX(0.88)',
+                transformOrigin: 'left center',
+                letterSpacing: '-0.03em',
+              }}
+            >
+              World Ranking
+            </p>
+            <div className="max-h-[62vh] overflow-y-auto pr-2">
+              <div className="grid grid-cols-[90px_1fr_220px] gap-x-6 border-b border-white/15 pb-3 text-[15px] uppercase tracking-[0.16em] text-[#b8ad96]">
+                <span>Rank</span>
+                <span>Player</span>
+                <span>Prize Money</span>
+              </div>
+              <div className="mt-3 flex flex-col gap-2">
+                {CAREER_RANKING.map((entry) => (
+                  <div
+                    key={entry.rank}
+                    className={`grid grid-cols-[90px_1fr_220px] gap-x-6 px-3 py-3 ${
+                      entry.isPlayer ? 'bg-[#1d1608]' : 'bg-white/[0.03]'
+                    }`}
+                  >
+                    <span className="text-[24px] font-semibold leading-none text-[#d9b86d]">
+                      #{entry.rank}
+                    </span>
+                    <span className="text-[20px] leading-none text-[#f2f0ea]">
+                      {entry.displayName}
+                    </span>
+                    <span className="text-[20px] leading-none text-[#f2f0ea]">
+                      {formatPrizeMoney(entry.prizeMoney)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -248,7 +348,7 @@ export function GameCanvas() {
         <>
           <div className="pointer-events-none absolute left-[17px] top-[18px] z-10">
             <Scoreboard
-              playerName={DEV_USER.username}
+              playerName={DEV_PLAYER_PROFILE.username}
               score={rulesState.playerScore}
               breakScore={rulesState.breakScore}
               ballOn={rulesState.ballOn}

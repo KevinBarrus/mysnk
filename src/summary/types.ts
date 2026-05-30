@@ -20,6 +20,7 @@ export interface TableSnapshot {
   shotIndex: number
   mode: SummaryMode
   actor: ShotActor
+  currentActor?: ShotActor
   phase: RulesState['phase']
   ballOn: BallOnIndicator
   redsRemaining: number
@@ -49,12 +50,17 @@ export interface ShotSummary {
   pottedBalls: PottedBallSummary[]
   scoredPoints: number
   foul: FoulInfo | null
+  foulBeneficiary?: ShotActor | 'none'
+  foulBallOn?: BallOnIndicator
   outcome: ShotOutcome
   simplePotChance: boolean | 'unknown'
   simplePotMiss: boolean | 'unknown'
   cueBallPositionResult: PositionResult
   nextShotChance: ChanceResult
+  turnChanged?: boolean
   after: RulesState & {
+    aiScore?: number
+    currentActor?: ShotActor
     cueBallEndPosition: Position2D | null
   }
 }
