@@ -79,6 +79,10 @@ export class SnookerRules {
     }
   }
 
+  isFrameComplete(): boolean {
+    return this.phase === 'clearance' && this.clearanceIndex >= CLEARANCE_ORDER.length
+  }
+
   /**
    * 每杆结束后调用。
    * firstContact: 白球首次接触的球 ID（null = 未碰任何球）

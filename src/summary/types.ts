@@ -7,6 +7,7 @@ export type ShotActor = 'player' | 'ai'
 export type ShotOutcome = 'score' | 'miss' | 'foul'
 export type PositionResult = 'ideal' | 'acceptable' | 'poor' | 'unknown'
 export type ChanceResult = 'created' | 'limited' | 'none' | 'unknown'
+export type PotDifficulty = 'easy' | 'medium' | 'hard' | 'unknown'
 
 export interface SnapshotBall {
   id: string
@@ -55,6 +56,7 @@ export interface ShotSummary {
   outcome: ShotOutcome
   simplePotChance: boolean | 'unknown'
   simplePotMiss: boolean | 'unknown'
+  potDifficulty: PotDifficulty
   cueBallPositionResult: PositionResult
   nextShotChance: ChanceResult
   turnChanged: boolean

@@ -45,6 +45,26 @@ function inferCueBallPositionResult(nextShotChance: ShotSummary['nextShotChance'
   return 'unknown'
 }
 
+function inferPotDifficulty(snapshot: TableSnapshot): ShotSummary['potDifficulty'] {
+  const cueBall = findBall(snapshot, 'white')
+  if (!cueBall) return 'unknown'
+
+  const targetKinds = new Set(legalTargetKinds(snapshot.ballOn))
+  let bestDistance = Infinity
+
+  for (const ball of snapshot.balls) {
+    if (ball.potted || ball.id === 'white' || !targetKinds.has(ball.kind)) continue
+    const targetPos = { x: ball.x, y: ball.y }
+    if (isBlockedPath(cueBall, targetPos, snapshot.balls, new Set(['white', ball.id]))) continue
+    bestDistance = Math.min(bestDistance, distance(cueBall, targetPos))
+  }
+
+  if (!Number.isFinite(bestDistance)) return 'unknown'
+  if (bestDistance <= 900) return 'easy'
+  if (bestDistance <= 1700) return 'medium'
+  return 'hard'
+}
+
 function distance(a: Position2D, b: Position2D): number {
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
@@ -209,6 +229,7 @@ export function buildShotSummary(params: {
   const simplePotMiss: boolean | 'unknown' = simplePotChance
     ? nonWhitePottedBalls.length === 0
     : false
+  const potDifficulty = inferPotDifficulty(params.before)
   const respottedColorIds = new Set(params.result.respottedColorIds)
   const afterBalls = params.before.balls
     .map((ball) => {
@@ -256,6 +277,7 @@ export function buildShotSummary(params: {
     outcome: params.result.foul ? 'foul' : params.result.scored > 0 ? 'score' : 'miss',
     simplePotChance,
     simplePotMiss,
+    potDifficulty,
     cueBallPositionResult,
     nextShotChance,
     turnChanged: params.result.turnChanged,

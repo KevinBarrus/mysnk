@@ -14,6 +14,8 @@ export interface CareerRankingEntry extends WorldRankingEntry {
   isPlayer: boolean
 }
 
+export const BEAT_AI_UNLOCK_PRIZE_MONEY = 500000
+
 function getDisplayName(name: string): string {
   const match = name.match(/（(.+)）/)
   return match?.[1] ?? name
@@ -47,7 +49,3 @@ export const CAREER_RANKING: CareerRankingEntry[] = WORLD_RANKING.map((entry) =>
     isPlayer: false,
   }
 })
-
-export const NEXT_CHALLENGER =
-  CAREER_RANKING.find((entry) => entry.rank === DEV_PLAYER_PROFILE.worldRanking - 1) ?? null
-

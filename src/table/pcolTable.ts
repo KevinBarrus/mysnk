@@ -24,10 +24,10 @@ import {
   buildTableRenderModel,
 } from '@/table/buildTableModels'
 
-const MIDDLE_POCKET_HALF_GAP = 78
+const MIDDLE_POCKET_HALF_GAP = 90
 const CORNER_JAW_OFFSET = 100
-const MIDDLE_JAW_OFFSET = 72
-const POCKET_ENTRY_DEPTH = 42
+const MIDDLE_JAW_OFFSET = 100
+const POCKET_ENTRY_DEPTH = 70
 
 function makeCushions(): CushionSegment[] {
   return [

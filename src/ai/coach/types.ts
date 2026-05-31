@@ -77,6 +77,7 @@ export interface PracticeReviewShotDigest {
   foulMessage: string | null
   hitLegalFirstTarget: boolean
   breakScoreAfterShot: number
+  potDifficulty: ShotSummary['potDifficulty']
   cueBallPositionResult: ShotSummary['cueBallPositionResult']
   nextShotChance: ShotSummary['nextShotChance']
 }
@@ -93,6 +94,18 @@ export interface PracticeReviewInput {
   goodCueBallPositionCount: number
   nextChanceCreatedCount: number
   recentShots: PracticeReviewShotDigest[]
+}
+
+export interface MatchReviewInput extends PracticeReviewInput {
+  playerScore: number
+  aiScore: number
+  playerPotCount: number
+  aiPotCount: number
+  playerFoulCount: number
+  aiFoulCount: number
+  playerHighestBreak: number
+  aiHighestBreak: number
+  opponentName: string
 }
 
 export interface PracticeReviewResult {

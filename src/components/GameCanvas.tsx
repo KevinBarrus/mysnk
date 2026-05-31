@@ -4,20 +4,34 @@ import {
   getAiAbilityProfile,
 } from '@/ai'
 import {
+  generatePracticeInstantFeedback,
   getPracticeInstantFeedback,
+  streamMatchReview,
   streamPracticeReview,
 } from '@/ai/coach'
 import { SnookerGame, type AiTurnResolvedEvent, type GamePhase } from '@/game/SnookerGame'
 import { Scoreboard } from '@/components/Scoreboard'
 import {
+  BEAT_AI_UNLOCK_PRIZE_MONEY,
   CAREER_RANKING,
   DEV_PLAYER_PROFILE,
-  NEXT_CHALLENGER,
+  type CareerRankingEntry,
 } from '@/data/careerRanking'
 import type { FoulInfo, RulesState } from '@/rules/SnookerRules'
+import { simulatePracticeSession } from '@/summary/simulatePracticeSession'
+import { simulateMatchSession } from '@/summary/simulateMatchSession'
 import type { SessionSummary, ShotSummary, TableSnapshot } from '@/summary/types'
 
 type AppView = 'guest' | 'menu' | 'practise' | 'beat-ai'
+type PauseMenuView = 'menu' | 'controls'
+type SimulatedResultMode = 'practice' | 'match'
+
+interface MatchSettlementBreakdown {
+  winPrize: number
+  breakPrize: number
+  totalPrize: number
+  resultLabel: string
+}
 
 const MENU_BUTTON_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
 const HUD_FONT_STACK = '"Arial Narrow", "Roboto Condensed", "Helvetica Neue", Arial, sans-serif'
@@ -41,6 +55,59 @@ const INITIAL_RULES_STATE: RulesState = {
 
 function formatPrizeMoney(value: number): string {
   return `${value.toLocaleString('en-GB')} £`
+}
+
+function getPracticeReward(highestBreak: number): number {
+  if (highestBreak >= 147) return 100000
+  if (highestBreak >= 100) return 5000
+  if (highestBreak >= 50) return 500
+  if (highestBreak >= 30) return 300
+  return 0
+}
+
+function getBeatAiWinReward(rank: number): number {
+  if (rank >= 10 && rank <= 15) return 100000
+  if (rank >= 5 && rank <= 10) return 200000
+  if (rank >= 1 && rank <= 5) return 200000 + (5 - rank) * 50000
+  return 0
+}
+
+function buildPracticeSessionKey(session: SessionSummary): string {
+  return [
+    session.mode,
+    session.shotCount,
+    session.totalScore,
+    session.highestBreak,
+    session.foulCount,
+    session.potCount,
+    session.legalFirstHitCount,
+    session.simplePotMissCount,
+    session.goodCueBallPositionCount,
+    session.nextChanceCreatedCount,
+  ].join(':')
+}
+
+function getMatchSettlementBreakdown(
+  session: SessionSummary,
+  challenger: CareerRankingEntry | null,
+): MatchSettlementBreakdown {
+  const winPrize = challenger && session.score.player > session.score.ai
+    ? getBeatAiWinReward(challenger.rank)
+    : 0
+  const breakPrize = getPracticeReward(session.highestBreak)
+  const totalPrize = winPrize + breakPrize
+  const resultLabel = session.score.player > session.score.ai
+    ? 'Victory'
+    : session.score.player < session.score.ai
+      ? 'Defeat'
+      : 'Draw'
+
+  return {
+    winPrize,
+    breakPrize,
+    totalPrize,
+    resultLabel,
+  }
 }
 
 interface MenuButtonProps {
@@ -79,14 +146,23 @@ export function GameCanvas() {
   const hostRef = useRef<HTMLDivElement>(null)
   const gameRef = useRef<SnookerGame | null>(null)
   const foulTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const practiceRewardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aiTurnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aiThoughtStreamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const aiThoughtHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const aiThoughtRequestIdRef = useRef(0)
+  const aiTurnMarkerRef = useRef<string | null>(null)
+  const awardedPracticeSessionKeysRef = useRef(new Set<string>())
+  const awardedBeatAiWinRef = useRef(false)
   const [view, setView] = useState<AppView>('guest')
   const [phase, setPhase] = useState<GamePhase>('general')
   const [showCareer, setShowCareer] = useState(false)
   const [showRanking, setShowRanking] = useState(false)
+  const [showBeatAiRanking, setShowBeatAiRanking] = useState(false)
   const [showMenuIdentity, setShowMenuIdentity] = useState(false)
+  const [pauseOpen, setPauseOpen] = useState(false)
+  const [pauseMenuView, setPauseMenuView] = useState<PauseMenuView>('menu')
+  const [playerPrizeMoney, setPlayerPrizeMoney] = useState<number>(DEV_PLAYER_PROFILE.prizeMoney)
   const [power, setPower] = useState(0.35)
   const [lastPotted, setLastPotted] = useState<string[]>([])
   const [shotBlocked, setShotBlocked] = useState<string | null>(null)
@@ -100,13 +176,22 @@ export function GameCanvas() {
   const [latestShotSummary, setLatestShotSummary] = useState<ShotSummary | null>(null)
   const [latestSessionSummary, setLatestSessionSummary] = useState<SessionSummary | null>(null)
   const [coachMessage, setCoachMessage] = useState<string | null>(null)
+  const [coachMessageSource, setCoachMessageSource] = useState<'llm' | 'template' | null>(null)
   const [coachReview, setCoachReview] = useState<string | null>(null)
   const [coachReviewDisplay, setCoachReviewDisplay] = useState('')
   const [coachReviewSource, setCoachReviewSource] = useState<'llm' | 'template' | null>(null)
   const [coachReviewFallbackReason, setCoachReviewFallbackReason] = useState<string | null>(null)
   const [coachReviewChunkCount, setCoachReviewChunkCount] = useState(0)
   const [isGeneratingCoachReview, setIsGeneratingCoachReview] = useState(false)
+  const [simulateConfirmOpen, setSimulateConfirmOpen] = useState(false)
+  const [showSimulatedResult, setShowSimulatedResult] = useState(false)
+  const [simulatedResultMode, setSimulatedResultMode] = useState<SimulatedResultMode | null>(null)
+  const [simulatedShotSummary, setSimulatedShotSummary] = useState<ShotSummary[] | null>(null)
+  const [simulatedTableSnapshot, setSimulatedTableSnapshot] = useState<TableSnapshot | null>(null)
+  const [simulatedSettlement, setSimulatedSettlement] = useState<MatchSettlementBreakdown | null>(null)
+  const [practiceRewardMessage, setPracticeRewardMessage] = useState<string | null>(null)
   const [debugPanel, setDebugPanel] = useState<'snapshot' | 'shot' | null>(null)
+  const [selectedAiChallenger, setSelectedAiChallenger] = useState<CareerRankingEntry | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
@@ -156,8 +241,10 @@ export function GameCanvas() {
     return () => {
       clearInterval(interval)
       if (foulTimerRef.current) clearTimeout(foulTimerRef.current)
+      if (practiceRewardTimerRef.current) clearTimeout(practiceRewardTimerRef.current)
       if (aiTurnTimerRef.current) clearTimeout(aiTurnTimerRef.current)
       if (aiThoughtStreamTimerRef.current) clearInterval(aiThoughtStreamTimerRef.current)
+      if (aiThoughtHoldTimerRef.current) clearTimeout(aiThoughtHoldTimerRef.current)
       game.dispose()
       gameRef.current = null
     }
@@ -178,11 +265,22 @@ export function GameCanvas() {
       setAiInnerThought(null)
       setAiInnerThoughtDisplay('')
       setCoachMessage(null)
+      setCoachMessageSource(null)
       setCoachReview(null)
       setCoachReviewDisplay('')
       setCoachReviewSource(null)
       setCoachReviewFallbackReason(null)
       setCoachReviewChunkCount(0)
+      setSimulateConfirmOpen(false)
+      setShowSimulatedResult(false)
+      setSimulatedResultMode(null)
+      setSimulatedShotSummary(null)
+      setSimulatedTableSnapshot(null)
+      setSimulatedSettlement(null)
+      setPracticeRewardMessage(null)
+      setPauseOpen(false)
+      setPauseMenuView('menu')
+      awardedBeatAiWinRef.current = false
       setPower(game.getPower())
       setPhase(game.getPhase())
       setDebugPanel(null)
@@ -192,31 +290,16 @@ export function GameCanvas() {
   const enterMenu = (): void => {
     setShowCareer(false)
     setShowRanking(false)
+    setShowBeatAiRanking(false)
     setShowMenuIdentity(true)
     setView('menu')
   }
 
   const handleBeatAi = (): void => {
-    gameRef.current?.setAiAbility(getAiAbilityProfile(NEXT_CHALLENGER))
-    gameRef.current?.setMode('match')
-    setShotBlocked(null)
-    setLastPotted([])
-    setFoulInfo(null)
-    setAiTurnMessage(null)
-    setLatestAiTurn(null)
-    setAiInnerThought(null)
-    setAiInnerThoughtDisplay('')
-    setCoachMessage(null)
-    setCoachReview(null)
-    setCoachReviewDisplay('')
-    setCoachReviewSource(null)
-    setCoachReviewFallbackReason(null)
-    setCoachReviewChunkCount(0)
-    setRulesState(INITIAL_RULES_STATE)
     setShowCareer(false)
     setShowRanking(false)
+    setShowBeatAiRanking(true)
     setShowMenuIdentity(false)
-    setView('beat-ai')
   }
 
   const startPractise = (): void => {
@@ -229,21 +312,69 @@ export function GameCanvas() {
     setAiInnerThought(null)
     setAiInnerThoughtDisplay('')
     setCoachMessage(null)
+    setCoachMessageSource(null)
     setCoachReview(null)
     setCoachReviewDisplay('')
     setCoachReviewSource(null)
     setCoachReviewFallbackReason(null)
     setCoachReviewChunkCount(0)
+    setSimulateConfirmOpen(false)
+    setShowSimulatedResult(false)
+    setSimulatedResultMode(null)
+    setSimulatedShotSummary(null)
+    setSimulatedTableSnapshot(null)
+    setSimulatedSettlement(null)
+    setPracticeRewardMessage(null)
+    setPauseOpen(false)
+    setPauseMenuView('menu')
+    awardedBeatAiWinRef.current = false
     setRulesState(INITIAL_RULES_STATE)
     setShowCareer(false)
     setShowRanking(false)
+    setShowBeatAiRanking(false)
     setShowMenuIdentity(false)
     setView('practise')
   }
 
+  const startBeatAiMatch = (challenger: CareerRankingEntry): void => {
+    gameRef.current?.setAiAbility(getAiAbilityProfile(challenger))
+    gameRef.current?.setMode('match')
+    setSelectedAiChallenger(challenger)
+    setShotBlocked(null)
+    setLastPotted([])
+    setFoulInfo(null)
+    setAiTurnMessage(null)
+    setLatestAiTurn(null)
+    setAiInnerThought(null)
+    setAiInnerThoughtDisplay('')
+    setCoachMessage(null)
+    setCoachMessageSource(null)
+    setCoachReview(null)
+    setCoachReviewDisplay('')
+    setCoachReviewSource(null)
+    setCoachReviewFallbackReason(null)
+    setCoachReviewChunkCount(0)
+    setSimulateConfirmOpen(false)
+    setShowSimulatedResult(false)
+    setSimulatedResultMode(null)
+    setSimulatedShotSummary(null)
+    setSimulatedTableSnapshot(null)
+    setSimulatedSettlement(null)
+    setPracticeRewardMessage(null)
+    setPauseOpen(false)
+    setPauseMenuView('menu')
+    awardedBeatAiWinRef.current = false
+    setRulesState(INITIAL_RULES_STATE)
+    setShowCareer(false)
+    setShowRanking(false)
+    setShowBeatAiRanking(false)
+    setShowMenuIdentity(false)
+    setView('beat-ai')
+  }
+
   const showGameHud = view === 'practise' || view === 'beat-ai'
-  const showAiHud = view === 'beat-ai' && NEXT_CHALLENGER !== null
-  const aiChallenger = NEXT_CHALLENGER
+  const showAiHud = view === 'beat-ai' && selectedAiChallenger !== null
+  const aiChallenger = selectedAiChallenger
   const aiTableName = (aiChallenger?.displayName ?? 'AI').replace(/\s+/g, '')
   const playerAtTable = rulesState.currentActor === 'player'
   const playerBreakScore = playerAtTable ? rulesState.breakScore : 0
@@ -255,14 +386,149 @@ export function GameCanvas() {
     : debugPanel === 'shot'
       ? latestShotSummary
       : null
+  const isSimulationOverlayOpen = showSimulatedResult && simulatedResultMode !== null
+  const isOverlayBlockingGame = pauseOpen || simulateConfirmOpen || isSimulationOverlayOpen
+  const beatAiEntries = CAREER_RANKING
+
+  useEffect(() => {
+    gameRef.current?.setPaused(isOverlayBlockingGame)
+  }, [isOverlayBlockingGame])
+
+  const resetPracticeUiState = (): void => {
+    awardedPracticeSessionKeysRef.current.clear()
+    awardedBeatAiWinRef.current = false
+    setLatestShotSummary(null)
+    setLatestTableSnapshot(null)
+    setLatestSessionSummary(null)
+    setLastPotted([])
+    setFoulInfo(null)
+    setCoachMessage(null)
+    setCoachMessageSource(null)
+    setCoachReview(null)
+    setCoachReviewDisplay('')
+    setCoachReviewSource(null)
+    setCoachReviewFallbackReason(null)
+    setCoachReviewChunkCount(0)
+    setShowSimulatedResult(false)
+    setSimulatedResultMode(null)
+    setSimulatedShotSummary(null)
+    setSimulatedTableSnapshot(null)
+    setSimulatedSettlement(null)
+    setPracticeRewardMessage(null)
+    setDebugPanel(null)
+    setSimulateConfirmOpen(false)
+    setPauseOpen(false)
+    setPauseMenuView('menu')
+  }
+
+  const handlePauseResume = (): void => {
+    if (isSimulationOverlayOpen) return
+    setPauseOpen(false)
+    setPauseMenuView('menu')
+  }
+
+  const handlePauseRestart = (): void => {
+    gameRef.current?.restartCurrentFrame({ emitSessionSummary: false })
+    resetPracticeUiState()
+    if (view === 'beat-ai' && aiChallenger) {
+      startBeatAiMatch(aiChallenger)
+      return
+    }
+    if (view === 'practise') {
+      startPractise()
+    }
+  }
+
+  const handlePauseQuit = (): void => {
+    gameRef.current?.restartCurrentFrame({ emitSessionSummary: false })
+    resetPracticeUiState()
+    setShowCareer(false)
+    setShowRanking(false)
+    setShowBeatAiRanking(false)
+    setShowMenuIdentity(true)
+    setView('menu')
+  }
+
+  const awardPracticeReward = (session: SessionSummary): void => {
+    if (session.mode !== 'practice' || session.shotCount <= 0) return
+
+    const sessionKey = buildPracticeSessionKey(session)
+    if (awardedPracticeSessionKeysRef.current.has(sessionKey)) return
+    awardedPracticeSessionKeysRef.current.add(sessionKey)
+
+    const reward = getPracticeReward(session.highestBreak)
+    if (reward <= 0) return
+    setPlayerPrizeMoney((current) => current + reward)
+
+    const tierLabel = session.highestBreak >= 147
+      ? 'Maximum Break'
+      : session.highestBreak >= 100
+        ? 'Century Break'
+        : session.highestBreak >= 50
+          ? 'Break 50'
+          : session.highestBreak >= 30
+            ? 'Break 30'
+            : 'Practice Completed'
+
+    setPracticeRewardMessage(`${tierLabel}: +${formatPrizeMoney(reward)}`)
+    if (practiceRewardTimerRef.current) clearTimeout(practiceRewardTimerRef.current)
+    practiceRewardTimerRef.current = setTimeout(() => setPracticeRewardMessage(null), 4000)
+  }
+
+  useEffect(() => {
+    if (view !== 'practise' || !latestSessionSummary || showSimulatedResult) return
+    awardPracticeReward(latestSessionSummary)
+  }, [latestSessionSummary, showSimulatedResult, view])
+
+  useEffect(() => {
+    if (view !== 'beat-ai' || phase !== 'ended' || !aiChallenger) return
+    if (showSimulatedResult) return
+    if (awardedBeatAiWinRef.current) return
+    if (rulesState.playerScore <= rulesState.aiScore) return
+
+    awardedBeatAiWinRef.current = true
+    const reward = getBeatAiWinReward(aiChallenger.rank)
+    if (reward <= 0) return
+
+    setPlayerPrizeMoney((current) => current + reward)
+    setPracticeRewardMessage(`Beat #${aiChallenger.rank} ${aiChallenger.displayName}: +${formatPrizeMoney(reward)}`)
+    if (practiceRewardTimerRef.current) clearTimeout(practiceRewardTimerRef.current)
+    practiceRewardTimerRef.current = setTimeout(() => setPracticeRewardMessage(null), 5000)
+  }, [aiChallenger, phase, rulesState.aiScore, rulesState.playerScore, showSimulatedResult, view])
 
   useEffect(() => {
     if (view !== 'practise') return
     if (!latestShotSummary) return
+    if (latestShotSummary.shotIndex === 1) {
+      setCoachMessage(null)
+      setCoachMessageSource(null)
+      return
+    }
+    if (showSimulatedResult) {
+      setCoachMessage(null)
+      setCoachMessageSource(null)
+      return
+    }
 
-    const feedback = getPracticeInstantFeedback(latestShotSummary, 'strict')
-    setCoachMessage(feedback?.text ?? null)
-  }, [latestShotSummary, view])
+    let cancelled = false
+
+    void generatePracticeInstantFeedback(latestShotSummary, 'strict')
+      .then((feedback) => {
+        if (cancelled) return
+        setCoachMessage(feedback.text)
+        setCoachMessageSource(feedback.source)
+      })
+      .catch(() => {
+        if (cancelled) return
+        const feedback = getPracticeInstantFeedback(latestShotSummary, 'strict')
+        setCoachMessage(feedback?.text ?? null)
+        setCoachMessageSource('template')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [latestShotSummary, showSimulatedResult, view])
 
   useEffect(() => {
     if (view !== 'beat-ai') return
@@ -283,14 +549,21 @@ export function GameCanvas() {
 
   useEffect(() => {
     if (view !== 'beat-ai' || phase !== 'aiResolving' || rulesState.currentActor !== 'ai' || !aiChallenger) {
-      setAiInnerThought(null)
-      setAiInnerThoughtDisplay('')
+      aiTurnMarkerRef.current = null
+      if (aiThoughtHoldTimerRef.current) {
+        clearTimeout(aiThoughtHoldTimerRef.current)
+        aiThoughtHoldTimerRef.current = null
+      }
       if (aiThoughtStreamTimerRef.current) {
         clearInterval(aiThoughtStreamTimerRef.current)
         aiThoughtStreamTimerRef.current = null
       }
       return
     }
+
+    const turnMarker = `${latestAiTurn?.afterState.playerScore ?? rulesState.playerScore}-${latestAiTurn?.afterState.aiScore ?? rulesState.aiScore}-${latestSessionSummary?.shotCount ?? 0}`
+    if (aiTurnMarkerRef.current === turnMarker) return
+    aiTurnMarkerRef.current = turnMarker
 
     const requestId = ++aiThoughtRequestIdRef.current
     setAiInnerThought(null)
@@ -309,7 +582,19 @@ export function GameCanvas() {
       if (aiThoughtRequestIdRef.current !== requestId) return
       setAiInnerThought('先把这一杆做干净。')
     })
-  }, [aiChallenger, latestSessionSummary, latestShotSummary, latestTableSnapshot, phase, rulesState.currentActor, view])
+  }, [
+    aiChallenger,
+    latestAiTurn?.afterState.aiScore,
+    latestAiTurn?.afterState.playerScore,
+    latestSessionSummary,
+    latestShotSummary,
+    latestTableSnapshot,
+    phase,
+    rulesState.aiScore,
+    rulesState.currentActor,
+    rulesState.playerScore,
+    view,
+  ])
 
   useEffect(() => {
     if (aiThoughtStreamTimerRef.current) {
@@ -330,16 +615,157 @@ export function GameCanvas() {
       if (index >= aiInnerThought.length && aiThoughtStreamTimerRef.current) {
         clearInterval(aiThoughtStreamTimerRef.current)
         aiThoughtStreamTimerRef.current = null
+        if (aiThoughtHoldTimerRef.current) clearTimeout(aiThoughtHoldTimerRef.current)
+        aiThoughtHoldTimerRef.current = setTimeout(() => {
+          aiThoughtHoldTimerRef.current = null
+        }, 3000)
       }
-    }, 36)
+    }, 64)
 
     return () => {
       if (aiThoughtStreamTimerRef.current) {
         clearInterval(aiThoughtStreamTimerRef.current)
         aiThoughtStreamTimerRef.current = null
       }
+      if (aiThoughtHoldTimerRef.current) {
+        clearTimeout(aiThoughtHoldTimerRef.current)
+        aiThoughtHoldTimerRef.current = null
+      }
     }
   }, [aiInnerThought])
+
+  const runSimulatedPracticeToEnd = async (): Promise<void> => {
+    const simulated = simulatePracticeSession()
+    console.log('[PracticeSimulation] generated', {
+      patternId: simulated.patternId,
+      shotCount: simulated.session.shotCount,
+      simplePotMissCount: simulated.session.simplePotMissCount,
+      foulCount: simulated.session.foulCount,
+    })
+    setLatestShotSummary(simulated.latestShot)
+    setLatestTableSnapshot(simulated.latestTable)
+    setLatestSessionSummary(simulated.session)
+    awardPracticeReward(simulated.session)
+    setSimulatedShotSummary(simulated.session.shots)
+    setSimulatedTableSnapshot(simulated.latestTable)
+    setSimulatedSettlement({
+      winPrize: 0,
+      breakPrize: getPracticeReward(simulated.session.highestBreak),
+      totalPrize: getPracticeReward(simulated.session.highestBreak),
+      resultLabel: 'Practice Ended',
+    })
+    setCoachMessage(null)
+    setCoachMessageSource(null)
+    setSimulateConfirmOpen(false)
+    setShowSimulatedResult(true)
+    setSimulatedResultMode('practice')
+    setDebugPanel(null)
+
+    setIsGeneratingCoachReview(true)
+    setCoachReview(null)
+    setCoachReviewDisplay('')
+    setCoachReviewSource('llm')
+    setCoachReviewFallbackReason(null)
+    setCoachReviewChunkCount(0)
+
+    try {
+      const review = await streamPracticeReview(
+        simulated.session,
+        {
+          onChunk: (_chunk, fullText) => {
+            setCoachReviewDisplay(fullText)
+            setCoachReviewChunkCount((current) => current + 1)
+          },
+          onDone: (result) => {
+            setCoachReviewSource(result.source)
+            setCoachReviewFallbackReason(result.fallbackReason ?? null)
+          },
+          onError: (result) => {
+            setCoachReviewSource(result.source)
+            setCoachReviewDisplay(result.text)
+            setCoachReviewFallbackReason(result.fallbackReason ?? null)
+          },
+        },
+        'strict',
+      )
+      setCoachReview(review.text)
+      setCoachReviewDisplay(review.text)
+      setCoachReviewSource(review.source)
+      setCoachReviewFallbackReason(review.fallbackReason ?? null)
+    } finally {
+      setIsGeneratingCoachReview(false)
+    }
+  }
+
+  const runSimulatedMatchToEnd = async (): Promise<void> => {
+    if (!aiChallenger) return
+
+    const simulated = simulateMatchSession()
+    const settlement = getMatchSettlementBreakdown(simulated.session, aiChallenger)
+    console.log('[MatchSimulation] generated', {
+      patternId: simulated.patternId,
+      shotCount: simulated.session.shotCount,
+      playerScore: simulated.session.score.player,
+      aiScore: simulated.session.score.ai,
+    })
+
+    setLatestShotSummary(simulated.latestShot)
+    setLatestTableSnapshot(simulated.latestTable)
+    setLatestSessionSummary(simulated.session)
+    setSimulatedShotSummary(simulated.session.shots)
+    setSimulatedTableSnapshot(simulated.latestTable)
+    setSimulatedSettlement(settlement)
+    setCoachMessage(null)
+    setCoachMessageSource(null)
+    setAiTurnMessage(null)
+    setSimulateConfirmOpen(false)
+    setShowSimulatedResult(true)
+    setSimulatedResultMode('match')
+    setDebugPanel(null)
+
+    if (settlement.totalPrize > 0) {
+      setPlayerPrizeMoney((current) => current + settlement.totalPrize)
+      setPracticeRewardMessage(`${settlement.resultLabel}: +${formatPrizeMoney(settlement.totalPrize)}`)
+      if (practiceRewardTimerRef.current) clearTimeout(practiceRewardTimerRef.current)
+      practiceRewardTimerRef.current = setTimeout(() => setPracticeRewardMessage(null), 5000)
+    }
+
+    setIsGeneratingCoachReview(true)
+    setCoachReview(null)
+    setCoachReviewDisplay('')
+    setCoachReviewSource('llm')
+    setCoachReviewFallbackReason(null)
+    setCoachReviewChunkCount(0)
+
+    try {
+      const review = await streamMatchReview(
+        simulated.session,
+        aiChallenger.displayName,
+        {
+          onChunk: (_chunk, fullText) => {
+            setCoachReviewDisplay(fullText)
+            setCoachReviewChunkCount((current) => current + 1)
+          },
+          onDone: (result) => {
+            setCoachReviewSource(result.source)
+            setCoachReviewFallbackReason(result.fallbackReason ?? null)
+          },
+          onError: (result) => {
+            setCoachReviewSource(result.source)
+            setCoachReviewDisplay(result.text)
+            setCoachReviewFallbackReason(result.fallbackReason ?? null)
+          },
+        },
+        'strict',
+      )
+      setCoachReview(review.text)
+      setCoachReviewDisplay(review.text)
+      setCoachReviewSource(review.source)
+      setCoachReviewFallbackReason(review.fallbackReason ?? null)
+    } finally {
+      setIsGeneratingCoachReview(false)
+    }
+  }
 
   const handlePracticeReview = async (): Promise<void> => {
     if (view !== 'practise' || !latestSessionSummary || isGeneratingCoachReview) return
@@ -456,7 +882,7 @@ export function GameCanvas() {
                 letterSpacing: '-0.03em',
               }}
             >
-              My Prize Money: {formatPrizeMoney(DEV_PLAYER_PROFILE.prizeMoney)}
+              My Prize Money: {formatPrizeMoney(playerPrizeMoney)}
             </p>
             <p
               className="mt-5 text-[30px] leading-none font-semibold uppercase text-[#d9b86d]"
@@ -469,18 +895,6 @@ export function GameCanvas() {
               }}
             >
               World Ranking Now: {DEV_PLAYER_PROFILE.worldRanking}
-            </p>
-            <p
-              className="mt-5 text-[30px] leading-none font-semibold uppercase text-[#f2f0ea]"
-              style={{
-                fontFamily: MENU_BUTTON_FONT_STACK,
-                fontStretch: 'condensed',
-                transform: 'scaleX(0.88)',
-                transformOrigin: 'left center',
-                letterSpacing: '-0.025em',
-              }}
-            >
-              Next Challenger: {NEXT_CHALLENGER ? `#${NEXT_CHALLENGER.rank} ${NEXT_CHALLENGER.displayName}` : 'N/A'}
             </p>
             <button
               type="button"
@@ -552,6 +966,94 @@ export function GameCanvas() {
                     </span>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'menu' && showBeatAiRanking && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/28">
+          <div className="relative max-h-[78vh] min-w-[980px] overflow-hidden bg-black px-8 py-7 text-[#f2f0ea] shadow-[0_12px_40px_rgba(0,0,0,0.65)]">
+            <button
+              type="button"
+              onClick={() => setShowBeatAiRanking(false)}
+              aria-label="Close beat ai ranking panel"
+              className="absolute right-4 top-3 text-[30px] leading-none text-[#f2f0ea] transition hover:text-[#d9b86d] focus:outline-none"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+              }}
+            >
+              ×
+            </button>
+            <p
+              className="mb-2 text-[34px] leading-none font-semibold uppercase"
+              style={{
+                fontFamily: MENU_BUTTON_FONT_STACK,
+                fontStretch: 'condensed',
+                transform: 'scaleX(0.88)',
+                transformOrigin: 'left center',
+                letterSpacing: '-0.03em',
+              }}
+            >
+              Beat AI
+            </p>
+            <p className="mb-6 text-[14px] uppercase tracking-[0.16em] text-[#b8ad96]">
+              Choose a world-ranked star to enter the room
+            </p>
+            <div className="max-h-[62vh] overflow-y-auto pr-2">
+              <div className="grid grid-cols-[90px_1fr_220px_280px] gap-x-6 border-b border-white/15 pb-3 text-[15px] uppercase tracking-[0.16em] text-[#b8ad96]">
+                <span>Rank</span>
+                <span>Player</span>
+                <span>Prize Money</span>
+                <span />
+              </div>
+              <div className="mt-3 flex flex-col gap-2">
+                {beatAiEntries.map((entry) => {
+                  const locked = entry.rank === 1
+                  const selectable = !locked && !entry.isPlayer
+
+                  return (
+                    <div
+                      key={entry.rank}
+                      className={`grid grid-cols-[90px_1fr_220px_280px] items-center gap-x-6 px-3 py-3 ${
+                        locked ? 'bg-white/[0.02] text-white/45' : 'bg-white/[0.05]'
+                      }`}
+                    >
+                      <span className={`text-[24px] font-semibold leading-none ${locked ? 'text-[#7e7463]' : 'text-[#d9b86d]'}`}>
+                        #{entry.rank}
+                      </span>
+                      <span className={`text-[20px] leading-none ${locked ? 'text-white/45' : 'text-[#f2f0ea]'}`}>
+                        {entry.displayName}
+                      </span>
+                      <span className={`text-[20px] leading-none ${locked ? 'text-white/40' : 'text-[#f2f0ea]'}`}>
+                        {formatPrizeMoney(entry.prizeMoney)}
+                      </span>
+                      {selectable ? (
+                        <button
+                          type="button"
+                          onClick={() => startBeatAiMatch(entry)}
+                          className="justify-self-end px-3 text-[34px] leading-none text-[#d9b86d] transition hover:text-[#ebca82] focus:outline-none"
+                          aria-label={`Challenge ${entry.displayName}`}
+                        >
+                          &gt;
+                        </button>
+                      ) : (
+                        <div className="justify-self-end text-right text-[14px] uppercase tracking-[0.08em] text-[#7e7463]">
+                          {entry.isPlayer ? (
+                            <span className="ml-3">Current Player</span>
+                          ) : (
+                            <>
+                              <span className="text-[18px]">🔒</span>
+                              <span className="ml-3">奖金需达到{BEAT_AI_UNLOCK_PRIZE_MONEY}￡方可解锁</span>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </div>
@@ -631,9 +1133,15 @@ export function GameCanvas() {
             </div>
           )}
 
-          {view === 'practise' && coachMessage && (
+          {view === 'practise' && !showSimulatedResult && coachMessage && (
             <div className="pointer-events-none absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded bg-black/75 px-4 py-2 text-sm font-semibold tracking-wide text-[#f1ede4]">
-              Coach: {coachMessage}
+              Coach{coachMessageSource ? ` (${coachMessageSource.toUpperCase()})` : ''}: {coachMessage}
+            </div>
+          )}
+
+          {view === 'practise' && practiceRewardMessage && (
+            <div className="pointer-events-none absolute left-1/2 top-32 z-20 -translate-x-1/2 rounded bg-[#0f2a14]/90 px-4 py-2 text-sm font-semibold tracking-wide text-[#d7f7c7] shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
+              Reward: {practiceRewardMessage}
             </div>
           )}
 
@@ -686,9 +1194,30 @@ export function GameCanvas() {
                 {isGeneratingCoachReview ? 'Coach...' : 'Coach Review'}
               </button>
             )}
+            {view === 'practise' && (
+              <button
+                type="button"
+                onClick={() => setSimulateConfirmOpen(true)}
+                disabled={isGeneratingCoachReview}
+                className="rounded bg-black/70 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-white/85 hover:bg-black/85 disabled:cursor-not-allowed disabled:bg-black/40 disabled:text-white/40"
+              >
+                Simulate To End
+              </button>
+            )}
+            {view === 'beat-ai' && (
+              <button
+                type="button"
+                onClick={() => setSimulateConfirmOpen(true)}
+                disabled={isGeneratingCoachReview}
+                className="rounded bg-black/70 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-white/85 hover:bg-black/85 disabled:cursor-not-allowed disabled:bg-black/40 disabled:text-white/40"
+              >
+                Simulate To End
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setDebugPanel((current) => current === 'snapshot' ? null : 'snapshot')}
+              disabled={isSimulationOverlayOpen}
               className="rounded bg-black/70 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-white/85 hover:bg-black/85"
             >
               TableSnapshot
@@ -696,19 +1225,46 @@ export function GameCanvas() {
             <button
               type="button"
               onClick={() => setDebugPanel((current) => current === 'shot' ? null : 'shot')}
+              disabled={isSimulationOverlayOpen}
               className="rounded bg-black/70 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-white/85 hover:bg-black/85"
             >
               ShotSummary
             </button>
           </div>
 
-          {debugPanel && (
+          <div className="absolute bottom-5 right-5 z-20">
+            <button
+              type="button"
+              onClick={() => {
+                if (isSimulationOverlayOpen) return
+                setPauseOpen(true)
+                setPauseMenuView('menu')
+              }}
+              className="flex h-12 w-12 items-center justify-center bg-black/62 text-[28px] font-semibold leading-none text-white/60 transition hover:bg-black/80 hover:text-white disabled:cursor-not-allowed disabled:bg-black/35 disabled:text-white/25"
+              aria-label="Pause game"
+              disabled={isSimulationOverlayOpen}
+            >
+              II
+            </button>
+          </div>
+
+          {debugPanel && !showSimulatedResult && (
             <div className="absolute right-4 top-40 z-20 h-[520px] w-[420px] overflow-hidden rounded border border-white/10 bg-[#0b0a08]/95 shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
               <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-white/75">
                 <span>{debugPanel === 'snapshot' ? 'Latest TableSnapshot' : 'Latest ShotSummary'}</span>
-                {latestSessionSummary && (
-                  <span className="text-white/45">Session shots: {latestSessionSummary.shotCount}</span>
-                )}
+                <div className="flex items-center gap-3">
+                  {latestSessionSummary && (
+                    <span className="text-white/45">Session shots: {latestSessionSummary.shotCount}</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setDebugPanel(null)}
+                    aria-label="Close debug panel"
+                    className="text-[18px] leading-none text-white/65 transition hover:text-white"
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
               <pre className="h-[calc(100%-49px)] overflow-auto px-4 py-3 text-[11px] leading-5 text-[#d9d3c6]">
                 {debugJson ? JSON.stringify(debugJson, null, 2) : 'No data yet.'}
@@ -716,7 +1272,256 @@ export function GameCanvas() {
             </div>
           )}
 
-          {view === 'practise' && (coachReview || isGeneratingCoachReview) && (
+          {pauseOpen && (
+            <div className="absolute inset-0 z-40 bg-black/26">
+              <div className="absolute left-1/2 top-[47%] w-[820px] -translate-x-1/2 -translate-y-1/2 bg-[#080b04]/92 text-[#ebe7dc] shadow-[0_18px_40px_rgba(0,0,0,0.52)]">
+                {pauseMenuView === 'menu' ? (
+                  <>
+                    <div className="border-b border-white/10 px-10 py-5">
+                      <p
+                        className="text-[66px] font-semibold uppercase leading-none tracking-[-0.05em] text-[#f3efe7]"
+                        style={{
+                          fontFamily: MENU_BUTTON_FONT_STACK,
+                          fontStretch: 'condensed',
+                          transform: 'scaleX(0.8)',
+                          transformOrigin: 'left center',
+                        }}
+                      >
+                        Paused
+                      </p>
+                    </div>
+                    <div className="flex flex-col text-[26px] uppercase text-[#dfdacd]">
+                      <button
+                        type="button"
+                        onClick={handlePauseResume}
+                        className="border-b border-white/8 px-12 py-5 text-left transition hover:bg-white/[0.025]"
+                        style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                      >
+                        Resume
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePauseRestart}
+                        className="border-b border-white/8 px-12 py-5 text-left transition hover:bg-white/[0.025]"
+                        style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                      >
+                        Restart
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPauseMenuView('controls')}
+                        className="border-b border-white/8 px-12 py-5 text-left transition hover:bg-white/[0.025]"
+                        style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                      >
+                        Controls Guide
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePauseQuit}
+                        className="border-b border-white/8 px-12 py-5 text-left transition hover:bg-white/[0.025]"
+                        style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                      >
+                        Quit
+                      </button>
+                    </div>
+                    <div className="flex justify-center px-10 py-5">
+                      <button
+                        type="button"
+                        onClick={handlePauseResume}
+                        className="min-w-[132px] bg-[#d7d5d0] px-8 py-3 text-[24px] font-semibold uppercase leading-none text-black transition hover:bg-[#f1efeb]"
+                        style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                      >
+                        Resume
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between border-b border-white/10 px-10 py-5">
+                      <p
+                        className="text-[54px] font-semibold uppercase leading-none tracking-[-0.05em] text-[#f3efe7]"
+                        style={{
+                          fontFamily: MENU_BUTTON_FONT_STACK,
+                          fontStretch: 'condensed',
+                          transform: 'scaleX(0.8)',
+                          transformOrigin: 'left center',
+                        }}
+                      >
+                        Controls Guide
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setPauseMenuView('menu')}
+                        className="text-[18px] uppercase tracking-[0.14em] text-white/70 transition hover:text-white"
+                        style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                      >
+                        Back
+                      </button>
+                    </div>
+                    <div className="px-10 py-8">
+                      <table className="w-full border-collapse text-left text-[24px] uppercase text-[#dfdacd]">
+                        <tbody>
+                          {[
+                            ['w', '瞄准'],
+                            ['a', '左移'],
+                            ['d', '右移'],
+                            ['s', '站立'],
+                          ].map(([key, label]) => (
+                            <tr key={key} className="border-b border-white/8">
+                              <td
+                                className="w-[140px] px-4 py-4 text-[#d9b86d]"
+                                style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                              >
+                                {key}
+                              </td>
+                              <td
+                                className="px-4 py-4"
+                                style={{ fontFamily: MENU_BUTTON_FONT_STACK, fontStretch: 'condensed' }}
+                              >
+                                {label}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {(view === 'practise' || view === 'beat-ai') && simulateConfirmOpen && (
+            <div className="absolute right-4 top-40 z-30 w-[420px] rounded border border-white/10 bg-[#0b0a08]/95 px-4 py-4 text-[#f1ede4] shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-white/75">
+                Simulate To End
+              </div>
+              <p className="mt-3 text-sm leading-6 text-[#ddd7ca]">
+                {view === 'beat-ai'
+                  ? 'Confirm simulating the rest of this match?'
+                  : 'Confirm simulating the rest of this practice session?'}
+              </p>
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (view === 'beat-ai') {
+                      void runSimulatedMatchToEnd()
+                    } else {
+                      void runSimulatedPracticeToEnd()
+                    }
+                  }}
+                  className="rounded bg-[#d9b86d] px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-black hover:bg-[#ebca82]"
+                >
+                  Yes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSimulateConfirmOpen(false)}
+                  className="rounded bg-black/70 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-white/85 hover:bg-black/85"
+                >
+                  No
+                </button>
+              </div>
+            </div>
+          )}
+
+          {showSimulatedResult && simulatedResultMode && (
+            <>
+            <div className="absolute left-4 right-4 top-40 z-20 grid grid-cols-4 gap-4">
+              <div className="h-[520px] overflow-hidden rounded border border-white/10 bg-[#0b0a08]/95 shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-white/75">
+                  <span>ShotSummary</span>
+                  {simulatedShotSummary && (
+                    <span className="text-white/45">Shots: {simulatedShotSummary.length}</span>
+                  )}
+                </div>
+                <pre className="h-[calc(100%-49px)] overflow-auto px-4 py-3 text-[11px] leading-5 text-[#d9d3c6]">
+                  {simulatedShotSummary ? JSON.stringify(simulatedShotSummary, null, 2) : debugPanel === 'shot' && debugJson ? JSON.stringify(debugJson, null, 2) : 'No data yet.'}
+                </pre>
+              </div>
+
+              <div className="h-[520px] overflow-hidden rounded border border-white/10 bg-[#0b0a08]/95 shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-[0.18em] text-white/75">
+                  <span>TableSnapshot</span>
+                  {latestSessionSummary && (
+                    <span className="text-white/45">Session shots: {latestSessionSummary.shotCount}</span>
+                  )}
+                </div>
+                <pre className="h-[calc(100%-49px)] overflow-auto px-4 py-3 text-[11px] leading-5 text-[#d9d3c6]">
+                  {simulatedTableSnapshot ? JSON.stringify(simulatedTableSnapshot, null, 2) : debugPanel === 'snapshot' && debugJson ? JSON.stringify(debugJson, null, 2) : 'No data yet.'}
+                </pre>
+              </div>
+
+              <div className="h-[520px] overflow-hidden rounded border border-white/10 bg-[#0b0a08]/95 px-4 py-4 text-[#f1ede4] shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+                <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/75">
+                  <span>Settlement</span>
+                  <span>{simulatedSettlement?.resultLabel ?? 'Summary'}</span>
+                </div>
+                <div className="mt-5 space-y-4">
+                  <div className="rounded border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-[#9c9075]">Victory Prize</div>
+                    <div className="mt-2 text-[26px] font-semibold text-[#f3efe7]">
+                      {formatPrizeMoney(simulatedSettlement?.winPrize ?? 0)}
+                    </div>
+                  </div>
+                  <div className="rounded border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-[#9c9075]">Break Prize</div>
+                    <div className="mt-2 text-[26px] font-semibold text-[#f3efe7]">
+                      {formatPrizeMoney(simulatedSettlement?.breakPrize ?? 0)}
+                    </div>
+                  </div>
+                  <div className="rounded border border-[#d9b86d]/30 bg-[#1c1407] px-4 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-[#d9b86d]">Total</div>
+                    <div className="mt-2 text-[34px] font-semibold text-[#f4de9a]">
+                      {formatPrizeMoney(simulatedSettlement?.totalPrize ?? 0)}
+                    </div>
+                  </div>
+                  {latestSessionSummary && (
+                    <div className="pt-2 text-sm leading-6 text-[#d5cfbf]">
+                      Score: {latestSessionSummary.score.player} - {latestSessionSummary.score.ai}
+                      <br />
+                      Highest Break: {latestSessionSummary.highestBreak}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="h-[520px] overflow-hidden rounded border border-[#d9b86d]/35 bg-[#0b0a08]/95 px-4 py-4 text-[#f1ede4] shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
+                <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-[#d9b86d]">
+                  <span>AI教练点评</span>
+                  <span>{coachReviewSource === 'llm' ? 'LLM' : 'Template'}</span>
+                </div>
+                <div className="mt-2 flex flex-col gap-1 text-[10px] uppercase tracking-[0.12em] text-[#9c9075]">
+                  <span>Status: {isGeneratingCoachReview ? 'streaming' : 'done'}</span>
+                  <span>Chunks: {coachReviewChunkCount}</span>
+                  <span>Fallback: {coachReviewFallbackReason ?? 'none'}</span>
+                </div>
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[#ddd7ca]">
+                  {coachReviewDisplay || coachReview || 'No review yet.'}
+                </p>
+              </div>
+            </div>
+            <div className="absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 gap-3">
+              <button
+                type="button"
+                onClick={handlePauseRestart}
+                className="min-w-[150px] rounded bg-[#d9b86d] px-6 py-3 text-[14px] font-semibold uppercase tracking-[0.14em] text-black transition hover:bg-[#ebca82]"
+              >
+                Restart
+              </button>
+              <button
+                type="button"
+                onClick={handlePauseQuit}
+                className="min-w-[150px] rounded bg-black/75 px-6 py-3 text-[14px] font-semibold uppercase tracking-[0.14em] text-white/90 transition hover:bg-black"
+              >
+                Quit
+              </button>
+            </div>
+            </>
+          )}
+
+          {view === 'practise' && !showSimulatedResult && !debugPanel && (coachReview || isGeneratingCoachReview) && (
             <div className="absolute right-4 top-40 z-20 w-[420px] rounded border border-[#d9b86d]/35 bg-[#0b0a08]/95 px-4 py-4 text-[#f1ede4] shadow-[0_10px_30px_rgba(0,0,0,0.45)]">
               <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-[#d9b86d]">
                 <span>Coach Review</span>

@@ -45,7 +45,9 @@ const FOLLOW_THROUGH_HOLD_DURATION = 0.18
 const POST_SHOT_PRESENTATION_DURATION = 1.05
 const FORWARD_CONTACT_CUE_OFFSET_MM = 0
 const STRIKE_CONTACT_OFFSET_MM = 4
-const AI_TURN_DELAY_MS = 1600
+// Hackathon demo tuning: give AI inner monologue time to be read
+// before the next AI shot is auto-resolved.
+const AI_TURN_DELAY_MS = 4200
 
 export class SnookerGame {
   private physics = new PlanePhysics()
@@ -54,6 +56,7 @@ export class SnookerGame {
   private raf = 0
   private lastTime = 0
   private inputEnabled = false
+  private paused = false
 
   /** Balls potted during the current shot, accumulated until settlement. */
   private shotPottedIds: string[] = []
@@ -165,6 +168,16 @@ export class SnookerGame {
 
   setAiAbility(profile: AiAbilityProfile): void {
     this.aiAbility = profile
+  }
+
+  setPaused(paused: boolean): void {
+    this.paused = paused
+    this.keys.clear()
+    this.isDragging = false
+  }
+
+  restartCurrentFrame(options: { emitSessionSummary?: boolean } = {}): void {
+    this.restart(options.emitSessionSummary ?? false)
   }
 
   private resetBalls(): void {
@@ -427,8 +440,8 @@ export class SnookerGame {
     }
   }
 
-  private restart(): void {
-    this.emitSessionSummary()
+  private restart(emitSessionSummary = true): void {
+    if (emitSessionSummary) this.emitSessionSummary()
     this.physics = new PlanePhysics()
     this.renderer.clearAllBalls()
     this.resetBalls()
@@ -746,6 +759,12 @@ export class SnookerGame {
     this.currentShotSnapshot = null
     this.pendingStandTarget = undefined
 
+    if (this.rules.isFrameComplete()) {
+      this.setPhase('ended')
+      this.emitSessionSummary()
+      return
+    }
+
     if (this.shouldEnterBallInHand(result, pottedBallIds)) {
       this.enterBallInHand()
       return
@@ -761,6 +780,11 @@ export class SnookerGame {
 
   private loop = (time: number): void => {
     this.raf = requestAnimationFrame(this.loop)
+    if (this.paused) {
+      this.lastTime = time
+      this.renderer.render()
+      return
+    }
     const dt = Math.min((time - this.lastTime) / 1000, 0.05)
     this.lastTime = time
 

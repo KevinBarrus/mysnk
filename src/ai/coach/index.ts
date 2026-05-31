@@ -1,5 +1,10 @@
 export { coachPromptAssets } from '@/ai/coach/assets'
 export { evaluateSessionForCoach, evaluateShotForCoach } from '@/ai/coach/evaluate'
+export { generatePracticeInstantFeedback } from '@/ai/coach/instantLlm'
+export { buildMatchReviewInput, getMatchReviewTemplate } from '@/ai/coach/match'
+export { streamMatchReview } from '@/ai/coach/matchLlm'
+export { buildMatchReviewUserPrompt } from '@/ai/coach/matchPrompt'
+export { buildPracticeInstantUserPrompt } from '@/ai/coach/instantPrompt'
 export { generatePracticeReview } from '@/ai/coach/llm'
 export { streamPracticeReview } from '@/ai/coach/llm'
 export { coachRoutingPolicy, getPreferredRenderMode } from '@/ai/coach/policy'
@@ -27,6 +32,7 @@ export type {
   CoachSessionSource,
   CoachShotSource,
   CoachTemplateEntry,
+  MatchReviewInput,
   PracticeReviewInput,
   PracticeReviewResult,
   PracticeReviewStreamHandlers,

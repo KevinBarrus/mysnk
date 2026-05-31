@@ -138,7 +138,22 @@ export async function generateAiInnerMonologue(params: {
     session: params.session,
   })
 
+  console.log('[AiInnerMonologue] start', {
+    personaId,
+    challenger: params.challenger?.displayName ?? null,
+    score: request.fact.score,
+    redsRemaining: request.fact.redsRemaining,
+    hasShot: Boolean(params.shot),
+    hasTable: Boolean(params.table),
+    hasSession: Boolean(params.session),
+  })
+
   if (!isLlmConfigured()) {
+    console.log('[AiInnerMonologue] fallback', {
+      source: 'template',
+      fallbackReason: 'missing_api_key',
+      personaId,
+    })
     return {
       text: fallback,
       source: 'template',
@@ -159,6 +174,11 @@ export async function generateAiInnerMonologue(params: {
       temperature: 0.95,
     })
 
+    console.log('[AiInnerMonologue] done', {
+      source: 'llm',
+      fallbackReason: null,
+      personaId,
+    })
     return {
       text: result.text,
       source: 'llm',
@@ -166,12 +186,18 @@ export async function generateAiInnerMonologue(params: {
       promptUsed: prompt,
     }
   } catch (error) {
+    const fallbackReason = error instanceof Error ? error.message : 'llm_unknown_error'
+    console.log('[AiInnerMonologue] fallback', {
+      source: 'template',
+      fallbackReason,
+      personaId,
+    })
     return {
       text: fallback,
       source: 'template',
       personaId,
       promptUsed: prompt,
-      fallbackReason: error instanceof Error ? error.message : 'llm_unknown_error',
+      fallbackReason,
     }
   }
 }

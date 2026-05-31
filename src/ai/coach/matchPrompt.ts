@@ -1,9 +1,9 @@
 import { coachPromptAssets } from '@/ai/coach/assets'
-import type { CoachPersona, PracticeReviewInput } from '@/ai/coach/types'
+import type { CoachPersona, MatchReviewInput } from '@/ai/coach/types'
 
-export function buildPracticeReviewUserPrompt(
-  review: PracticeReviewInput,
-  persona: CoachPersona = 'calm',
+export function buildMatchReviewUserPrompt(
+  review: MatchReviewInput,
+  persona: CoachPersona = 'strict',
 ): string {
   const personaGuide = coachPromptAssets.personas[persona]
   const recentShots = review.recentShots.map((shot) => {
@@ -22,27 +22,35 @@ export function buildPracticeReviewUserPrompt(
   }).join('\n')
 
   return [
-    'You are generating a short snooker practice review in Simplified Chinese.',
+    'You are generating a short snooker match review in Simplified Chinese.',
     `Persona style: ${personaGuide.coreStyle}`,
     persona === 'strict'
-      ? 'Strict persona rule: when the player wastes easy chances or commits cheap fouls, you should sound harsh, contemptuous, and pressuring. You may use mild profanity, but keep it purposeful and not repetitive.'
+      ? 'Strict persona rule: be sharp and blunt when the player wastes control or gives away the table, but keep it analytical.'
       : 'Calm persona rule: stay composed, precise, and professional.',
     'Task:',
-    '- Write a short coaching review for a practice segment.',
-    '- Keep it to 2 or 3 sentences.',
-    '- Mention one clear strength or one clear problem, then one next-step suggestion.',
-    '- Do not mention hidden physics or invent missing facts.',
+    '- Write a short post-match coaching review for the player.',
+    '- Keep it to 3 or 4 sentences.',
+    '- Sentence 1-2: summarize the player in this match.',
+    '- Sentence 3-4: analyze the opponent style and how the player should respond next time.',
+    '- Mention the opponent by name when useful.',
+    '- Do not invent hidden events or physics.',
     '- Sound like a coach, not a commentator.',
-    '- In strict mode, if simple misses are a clear pattern, make that the central attack point.',
-    '- If misses are mostly hard shots, reduce the abuse and focus more on emotional control, shot choice, and when to stop forcing the table.',
     '',
-    'Structured practice summary:',
+    'Structured match summary:',
     `mode=${review.mode}`,
+    `opponentName=${review.opponentName}`,
+    `playerScore=${review.playerScore}`,
+    `aiScore=${review.aiScore}`,
     `shotCount=${review.shotCount}`,
-    `totalScore=${review.totalScore}`,
     `highestBreak=${review.highestBreak}`,
+    `playerHighestBreak=${review.playerHighestBreak}`,
+    `aiHighestBreak=${review.aiHighestBreak}`,
     `foulCount=${review.foulCount}`,
+    `playerFoulCount=${review.playerFoulCount}`,
+    `aiFoulCount=${review.aiFoulCount}`,
     `potCount=${review.potCount}`,
+    `playerPotCount=${review.playerPotCount}`,
+    `aiPotCount=${review.aiPotCount}`,
     `legalFirstHitCount=${review.legalFirstHitCount}`,
     `simplePotMissCount=${review.simplePotMissCount}`,
     `goodCueBallPositionCount=${review.goodCueBallPositionCount}`,

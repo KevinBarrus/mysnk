@@ -35,6 +35,41 @@ export interface LlmClientConfig {
   model: string
 }
 
+function maskApiKey(apiKey?: string): string {
+  if (!apiKey) return 'missing'
+  if (apiKey.length <= 10) return `${apiKey.slice(0, 2)}***${apiKey.slice(-2)}`
+  return `${apiKey.slice(0, 6)}***${apiKey.slice(-4)}`
+}
+
+function logLlmRequest(kind: 'text' | 'stream', config: LlmClientConfig, request: LlmTextRequest): void {
+  console.log('[LLMClient] request', {
+    kind,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    apiKey: maskApiKey(config.apiKey),
+    temperature: request.temperature ?? 0.7,
+  })
+}
+
+function logLlmSuccess(kind: 'text' | 'stream', config: LlmClientConfig, text: string): void {
+  console.log('[LLMClient] success', {
+    kind,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    chars: text.length,
+  })
+}
+
+function logLlmFailure(kind: 'text' | 'stream', config: LlmClientConfig, reason: string): void {
+  console.log('[LLMClient] failure', {
+    kind,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    apiKey: maskApiKey(config.apiKey),
+    reason,
+  })
+}
+
 export function getSharedLlmConfig(): LlmClientConfig {
   const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY?.trim()
   const baseUrl = (
@@ -57,7 +92,10 @@ export async function generateLlmText(
   request: LlmTextRequest,
   config = getSharedLlmConfig(),
 ): Promise<LlmTextResponse> {
+  logLlmRequest('text', config, request)
+
   if (!config.apiKey) {
+    logLlmFailure('text', config, 'llm_missing_api_key')
     throw new Error('llm_missing_api_key')
   }
 
@@ -84,6 +122,7 @@ export async function generateLlmText(
   })
 
   if (!response.ok) {
+    logLlmFailure('text', config, `llm_request_failed:${response.status}`)
     throw new Error(`llm_request_failed:${response.status}`)
   }
 
@@ -91,8 +130,11 @@ export async function generateLlmText(
   const text = json.choices?.[0]?.message?.content?.trim()
 
   if (!text) {
+    logLlmFailure('text', config, 'llm_empty_response')
     throw new Error('llm_empty_response')
   }
+
+  logLlmSuccess('text', config, text)
 
   return {
     text,
@@ -105,7 +147,10 @@ export async function streamLlmText(
   handlers: LlmTextStreamHandlers = {},
   config = getSharedLlmConfig(),
 ): Promise<LlmTextResponse> {
+  logLlmRequest('stream', config, request)
+
   if (!config.apiKey) {
+    logLlmFailure('stream', config, 'llm_missing_api_key')
     throw new Error('llm_missing_api_key')
   }
 
@@ -133,10 +178,12 @@ export async function streamLlmText(
   })
 
   if (!response.ok) {
+    logLlmFailure('stream', config, `llm_request_failed:${response.status}`)
     throw new Error(`llm_request_failed:${response.status}`)
   }
 
   if (!response.body) {
+    logLlmFailure('stream', config, 'llm_stream_missing_body')
     throw new Error('llm_stream_missing_body')
   }
 
@@ -172,8 +219,11 @@ export async function streamLlmText(
 
   const finalText = text.trim()
   if (!finalText) {
+    logLlmFailure('stream', config, 'llm_empty_response')
     throw new Error('llm_empty_response')
   }
+
+  logLlmSuccess('stream', config, finalText)
 
   return {
     text: finalText,

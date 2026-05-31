@@ -27,6 +27,7 @@ function toPracticeReviewShotDigest(shot: CoachShotSource): PracticeReviewShotDi
     foulMessage: shot.foul?.message ?? null,
     hitLegalFirstTarget: shot.hitLegalFirstTarget,
     breakScoreAfterShot: shot.after.breakScore,
+    potDifficulty: shot.potDifficulty,
     cueBallPositionResult: shot.cueBallPositionResult,
     nextShotChance: shot.nextShotChance,
   }
