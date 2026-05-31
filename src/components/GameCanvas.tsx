@@ -381,6 +381,9 @@ export function GameCanvas() {
   const aiBreakScore = rulesState.currentActor === 'ai' ? rulesState.breakScore : 0
   const playerBallOn = playerAtTable ? rulesState.ballOn : null
   const aiBallOn = rulesState.currentActor === 'ai' ? rulesState.ballOn : null
+  const liveCareerRanking = CAREER_RANKING.map((entry) => entry.isPlayer
+    ? { ...entry, prizeMoney: playerPrizeMoney }
+    : entry)
   const debugJson = debugPanel === 'snapshot'
     ? latestTableSnapshot
     : debugPanel === 'shot'
@@ -388,7 +391,7 @@ export function GameCanvas() {
       : null
   const isSimulationOverlayOpen = showSimulatedResult && simulatedResultMode !== null
   const isOverlayBlockingGame = pauseOpen || simulateConfirmOpen || isSimulationOverlayOpen
-  const beatAiEntries = CAREER_RANKING
+  const beatAiEntries = liveCareerRanking
 
   useEffect(() => {
     gameRef.current?.setPaused(isOverlayBlockingGame)
@@ -948,7 +951,7 @@ export function GameCanvas() {
                 <span>Prize Money</span>
               </div>
               <div className="mt-3 flex flex-col gap-2">
-                {CAREER_RANKING.map((entry) => (
+                {liveCareerRanking.map((entry) => (
                   <div
                     key={entry.rank}
                     className={`grid grid-cols-[90px_1fr_220px] gap-x-6 px-3 py-3 ${
